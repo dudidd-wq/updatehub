@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מרכז העדכונים</title>
+<style>
+:root{
+  --bg:#0a0e13; --panel:#11171f; --panel2:#161e28; --line:#222d3b; --line2:#2c394a;
+  --text:#e6edf3; --muted:#8b98a9; --dim:#5d6b7c;
+  --accent:#4cc2ff; --ok:#3fb950; --okdim:#5f8f6a; --warn:#e3b341; --err:#f85149; --busy:#a98bff;
+  --mono:"Cascadia Mono","Cascadia Code",Consolas,"Courier New",monospace;
+  --sans:"Segoe UI Variable Text","Segoe UI",system-ui,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans)}
+button,select,input{font:inherit;color:inherit}
+bdi{unicode-bidi:isolate}
+.wrap{max-width:1480px;margin:0 auto;padding:18px 18px 40px}
+
+/* header */
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(140deg,#1b6fa8,#4cc2ff);color:#06121c;font-weight:800;font-size:20px;flex:none}
+.logo.spin{animation:spin 2.4s linear infinite}
+@keyframes spin{to{transform:rotate(-360deg)}}
+h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.2px}
+.sub{color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{border:1px solid var(--line2);border-radius:999px;padding:5px 12px;font-size:12.5px;color:var(--muted);white-space:nowrap;display:flex;align-items:center;gap:7px}
+.chip i{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
+.chip.running i{background:var(--accent);box-shadow:0 0 0 4px rgba(76,194,255,.15)}
+.chip.completed i{background:var(--ok)} .chip.cancelled i,.chip.failed i,.chip.offline i{background:var(--err)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px}
+h2{margin:0;font-size:14.5px;font-weight:650;color:#cfd9e3}
+
+/* hero */
+.hero{padding:18px 20px 16px;margin-bottom:12px}
+.hero-top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.phase{font-size:18px;font-weight:650}
+.current{color:var(--muted);min-height:21px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70vw}
+.pct{font-size:40px;font-weight:300;line-height:1;font-variant-numeric:tabular-nums;color:#fff}
+.pct small{font-size:18px;color:var(--muted);margin-inline-start:2px}
+.bar{height:14px;border-radius:8px;background:#0c1219;border:1px solid var(--line);margin:14px 0 10px;overflow:hidden}
+.fill{height:100%;width:0;background:linear-gradient(90deg,#2a8fd0,var(--accent));border-radius:8px;transition:width .6s ease}
+.fill.run{background-image:linear-gradient(-45deg,rgba(255,255,255,.14) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.14) 50%,rgba(255,255,255,.14) 75%,transparent 75%),linear-gradient(90deg,#2a8fd0,var(--accent));background-size:26px 26px,100% 100%;animation:stripes 1s linear infinite}
+.fill.done{background:var(--ok)} .fill.bad{background:var(--err)}
+@keyframes stripes{to{background-position:-26px 0,0 0}}
+.meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--muted);font-size:12.5px}
+.meta b{color:var(--text);font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.btn{border:1px solid var(--line2);background:var(--panel2);border-radius:9px;padding:8px 16px;cursor:pointer;transition:background .15s,border-color .15s}
+.btn:hover:not(:disabled){border-color:#3d4f66;background:#1b2531}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary{background:#1d6fa5;border-color:#2a87c4;color:#fff;font-weight:600}
+.btn.primary:hover:not(:disabled){background:#2380bd}
+.btn.danger{border-color:#6e2a2a;color:#ffb3ae} .btn.warnb{border-color:#6e5317;color:#ffd77a}
+.btn.sm{padding:4px 10px;font-size:12.5px}
+.banner{display:none;margin-top:12px;border:1px solid #6e5317;background:rgba(227,179,65,.08);color:#ffd77a;border-radius:10px;padding:9px 12px;font-size:13px}
+.banner.show{display:block}
+
+/* tiles */
+.tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.tile .n{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+.tile .l{font-size:12px;color:var(--muted)}
+.tile.ok .n{color:var(--ok)} .tile.warn .n{color:var(--warn)} .tile.err .n{color:var(--err)} .tile.accent .n{color:var(--accent)} .tile.okdim .n{color:var(--okdim)}
+.tile.zero .n{color:var(--dim)}
+
+/* main grid */
+.grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px;align-items:start}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:12px;margin-top:12px;align-items:start}
+.sec-head{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;flex-wrap:wrap}
+.sec-head h2{flex:1}
+
+/* providers */
+.plist{padding:0 8px 8px}
+.prov{border-top:1px solid var(--line)}
+.prov:first-child{border-top:none}
+.phead{width:100%;display:grid;grid-template-columns:12px minmax(0,1fr) auto 14px;align-items:center;gap:10px;padding:10px 8px;background:none;border:0;cursor:pointer;text-align:start;border-radius:8px}
+.phead:hover{background:var(--panel2)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--dim)}
+.st-running .dot{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+.st-done .dot{background:var(--ok)} .st-failed .dot{background:var(--err)} .st-skipped .dot{background:#3a4553}
+@keyframes pulse{50%{opacity:.35}}
+.ptitle{font-weight:600}
+.st-skipped .ptitle,.st-pending .ptitle{color:var(--muted)}
+.psum{display:block;color:var(--muted);font-size:12px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pstat{font-size:12px;color:var(--muted);white-space:nowrap}
+.chev{width:8px;height:8px;border-inline-start:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:rotate(-45deg);transition:transform .2s;justify-self:center}
+.prov.open .chev{transform:rotate(-225deg)}
+.mini{height:3px;background:#0c1219;border-radius:2px;margin:0 30px 8px 30px;overflow:hidden;display:none}
+.st-running .mini{display:block}
+.mini div{height:100%;background:var(--accent);transition:width .5s}
+.items{display:none;padding:0 6px 10px 6px}
+.prov.open .items{display:block}
+.row{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,.9fr) minmax(0,1.3fr) 104px;gap:10px;align-items:center;padding:7px 10px;border-radius:8px;font-size:13px}
+.row:nth-child(odd){background:rgba(255,255,255,.018)}
+.row .nm{min-width:0}
+.row .nm bdi{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .rs{color:var(--muted);font-size:12px;white-space:normal;overflow-wrap:anywhere}
+.row .src{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .ver{font-family:var(--mono);font-size:12px;color:#b9c6d3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .ver .to{color:var(--accent)}
+.pill{justify-self:start;font-size:11.5px;border-radius:999px;padding:2px 9px;border:1px solid var(--line2);color:var(--muted);white-space:nowrap}
+.pill.ok{color:var(--ok);border-color:#235c2f;background:rgba(63,185,80,.08)}
+.pill.okdim{color:var(--okdim);border-color:#26402c}
+.pill.warn{color:var(--warn);border-color:#6e5317;background:rgba(227,179,65,.07)}
+.pill.err{color:var(--err);border-color:#6e2a2a;background:rgba(248,81,73,.08)}
+.pill.accent{color:var(--accent);border-color:#1e4f6e;background:rgba(76,194,255,.07)}
+.pill.busy{color:var(--busy);border-color:#45366e;background:rgba(169,139,255,.08)}
+.empty{color:var(--muted);padding:18px 16px}
+
+/* log */
+.log{position:sticky;top:12px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden}
+.seg button{background:none;border:0;padding:5px 11px;cursor:pointer;color:var(--muted);font-size:12.5px}
+.seg button+button{border-inline-start:1px solid var(--line2)}
+.seg button.on{background:#1d2a38;color:#fff}
+.seg button[data-lv="3"]{font-family:var(--mono);letter-spacing:.3px}
+select,input[type=time]{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:4px 8px}
+.chk{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:12.5px;cursor:pointer}
+.logbox{height:calc(100vh - 210px);min-height:360px;overflow:auto;padding:4px 10px 12px;font-size:12.5px;border-top:1px solid var(--line)}
+.ln{display:grid;grid-template-columns:62px 104px minmax(0,1fr);gap:8px;padding:2px 4px;border-radius:4px}
+.ln:hover{background:rgba(255,255,255,.03)}
+.ln .t{color:var(--dim);font-family:var(--mono);font-size:11.5px}
+.ln .p{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.ln .m{overflow-wrap:anywhere;white-space:pre-wrap}
+.ln.k-step .m{color:var(--accent);font-weight:600}
+.ln.k-ok .m{color:var(--ok)} .ln.k-warn .m{color:var(--warn)} .ln.k-err .m{color:var(--err)}
+.ln.k-cmd .m{color:#79c0ff;font-family:var(--mono);font-size:12px}
+.ln.k-out .m{color:#9aa7b4;font-family:var(--mono);font-size:12px}
+.ln.l3 .t,.ln.l3 .p{opacity:.75}
+.logempty{color:var(--muted);padding:18px 6px}
+
+/* schedule + history */
+.sched-body{padding:4px 16px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.switch{position:relative;width:42px;height:24px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:#2a3544;border-radius:999px;cursor:pointer;transition:.2s}
+.switch span:before{content:"";position:absolute;width:18px;height:18px;top:3px;right:3px;background:#cfd9e3;border-radius:50%;transition:.2s}
+.switch input:checked+span{background:#1d6fa5}
+.switch input:checked+span:before{transform:translateX(-18px)}
+.sched-note{width:100%;color:var(--muted);font-size:12.5px}
+.hlist{padding:0 10px 10px}
+.hrow{display:grid;grid-template-columns:120px 72px 70px minmax(0,1fr);gap:10px;padding:7px 8px;border-top:1px solid var(--line);font-size:12.5px;align-items:center}
+.hrow:first-child{border-top:none}
+.hrow .d{font-family:var(--mono);color:#b9c6d3;font-size:12px}
+.hrow .c{color:var(--muted)}
+
+.toast{position:fixed;bottom:18px;left:50%;transform:translate(-50%,20px);opacity:0;background:#1d2a38;border:1px solid var(--line2);padding:9px 16px;border-radius:10px;transition:.25s;pointer-events:none;z-index:9}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:1100px){
+  .grid,.grid2{grid-template-columns:1fr}
+  .log{position:static}
+  .logbox{height:60vh}
+  .tiles{grid-template-columns:repeat(3,1fr)}
+}
+@media (max-width:640px){
+  .wrap{padding:12px 12px 32px}
+  .tiles{grid-template-columns:repeat(2,1fr)}
+  .row{grid-template-columns:minmax(0,1fr) auto;row-gap:2px}
+  .row .src{display:none}
+  .row .ver{grid-column:1/-1;order:3}
+  .ln{grid-template-columns:52px minmax(0,1fr)} .ln .p{display:none}
+  .pct{font-size:32px}
+  .hrow{grid-template-columns:1fr auto}
+  .hrow .c,.hrow .m{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo" id="logo">⟳</div>
+      <div style="min-width:0">
+        <h1>מרכז העדכונים</h1>
+        <div class="sub" id="machine">טוען...</div>
+      </div>
+    </div>
+    <div class="chip" id="runChip"><i></i><span>—</span></div>
+  </header>
+
+  <section class="card hero">
+    <div class="hero-top">
+      <div style="min-width:0">
+        <div class="phase" id="phase">טוען...</div>
+        <div class="current" id="current"></div>
+      </div>
+      <div class="pct"><span id="pct">0</span><small>%</small></div>
+    </div>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar"><div class="fill" id="fill"></div></div>
+    <div class="meta" id="meta"></div>
+    <div class="banner" id="rebootBanner"></div>
+    <div class="banner" id="noticeBanner"></div>
+    <div class="actions">
+      <button class="btn primary" id="btnUpdate">עדכן הכל</button>
+      <button class="btn" id="btnScan">סריקה בלבד</button>
+      <button class="btn danger" id="btnCancel" hidden>עצור</button>
+      <button class="btn warnb" id="btnReboot" hidden>אתחל עכשיו</button>
+    </div>
+  </section>
+
+  <section class="tiles" id="tiles"></section>
+
+  <div class="grid">
+    <section class="card">
+      <div class="sec-head"><h2>מקורות ורכיבים</h2><button class="btn sm" id="expandAll">פתח הכל</button></div>
+      <div class="plist" id="plist"><div class="empty">אין נתונים עדיין.</div></div>
+    </section>
+
+    <section class="card log">
+      <div class="sec-head">
+        <h2>יומן פעולות</h2>
+        <div class="seg" id="seg">
+          <button data-lv="1">תמציתי</button><button data-lv="2">מפורט</button><button data-lv="3">VERBOSE</button>
+        </div>
+        <select id="logProv" aria-label="סינון לפי מקור"><option value="">כל המקורות</option></select>
+        <label class="chk"><input type="checkbox" id="follow" checked>גלילה אוטומטית</label>
+        <button class="btn sm" id="copyLog">העתק</button>
+      </div>
+      <div class="logbox" id="logBox"><div class="logempty">היומן יופיע כאן כשתתחיל ריצה.</div></div>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="card">
+      <div class="sec-head"><h2>עדכון אוטומטי שבועי</h2></div>
+      <div class="sched-body">
+        <label class="switch" title="הפעלה/כיבוי"><input type="checkbox" id="schOn"><span></span></label>
+        <span>ביום</span>
+        <select id="schDay">
+          <option value="Sunday">ראשון</option><option value="Monday">שני</option><option value="Tuesday">שלישי</option>
+          <option value="Wednesday">רביעי</option><option value="Thursday">חמישי</option><option value="Friday">שישי</option><option value="Saturday">שבת</option>
+        </select>
+        <span>בשעה</span>
+        <input type="time" id="schTime" value="03:00">
+        <button class="btn sm" id="schSave">שמור</button>
+        <div class="sched-note" id="schNote"></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="sec-head"><h2>ריצות קודמות</h2></div>
+      <div class="hlist" id="hist"><div class="empty">אין ריצות קודמות.</div></div>
+    </section>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+// Lookups never fall through to Object.prototype ("constructor", "__proto__" would crash the render or inject).
+function own(map, k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : undefined; }
+// A value used inside a class attribute: letters, digits, dashes and underscores only.
+function cssTok(v) { return String(v == null ? '' : v).replace(/[^A-Za-z0-9_-]/g, ''); }
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const ITEM = {
+  checking:['בודק',''], available:['זמין עדכון','accent'], downloading:['מוריד','busy'], installing:['מתקין','busy'],
+  updated:['עודכן','ok'], reboot:['ממתין לאתחול','warn'], current:['מעודכן','okdim'], failed:['נכשל','err'],
+  skipped:['דולג',''], manual:['דורש טיפול','warn'], info:['מידע','']
+};
+const PROV = { pending:'ממתין', running:'פועל', done:'הושלם', skipped:'דולג', failed:'נכשל' };
+const RUN  = { running:'פועל', completed:'הושלם', cancelled:'בוטל', failed:'נעצר', skipped:'דולג' };
+const TILES = [['updated','עודכנו','ok'],['reboot','ממתינים לאתחול','warn'],['available','זמינים','accent'],
+               ['failed','נכשלו','err'],['manual','דורשים טיפול','warn'],['current','מעודכנים','okdim']];
+const DAYS = {Sunday:'ראשון',Monday:'שני',Tuesday:'שלישי',Wednesday:'רביעי',Thursday:'חמישי',Friday:'שישי',Saturday:'שבת'};
+
+const store = { get(k,d){ try{ const v = localStorage.getItem(k); return v == null ? d : v; }catch(e){ return d; } },
+                set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} } };
+
+let state = null, engineRunning = false, online = true;
+let runId = null, nextSeq = 0, events = [], provTitles = Object.create(null);
+const SHORT = { system:'מערכת', windowsupdate:'Windows Update', drivers:'דרייברים', nvidia:'NVIDIA', office:'Office',
+  winget:'winget', store:'Store', powershell:'PowerShell', pip:'pip', vscode:'VS Code', wsl:'WSL',
+  pkgmgr:'מנהלי חבילות', defender:'Defender', health:'תקינות' };
+let level = +store.get('uh.level', 2), provFilter = '';
+const userOpen = Object.create(null);           // provider id -> true/false set by the user
+let lastProvJson = '', schedLoaded = false, histAt = 0, startingUntil = 0;
+
+/* Keys: the server opens this page as /?k=<boot key>. That key is single use: the page swaps it at once for the
+   session key (POST /api/session), removes it from the address bar, and keeps the session key only for this tab
+   (sessionStorage survives a reload, not a new tab). Every API call carries the session key. */
+let KEY = '', authFailed = false;
+async function initKey() {
+  let boot = '';
+  try { const u = new URL(location.href); boot = u.searchParams.get('k') || ''; if (boot) history.replaceState(null, '', u.pathname); } catch (e) {}
+  if (boot) {
+    try {
+      const r = await fetch('/api/session', { method: 'POST', headers: { 'X-UpdateHub': boot }, cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      if (j && j.key) { KEY = j.key; try { sessionStorage.setItem('uh.k', KEY); } catch (e) {} }
+    } catch (e) {}
+  }
+  if (!KEY) { try { KEY = sessionStorage.getItem('uh.k') || ''; } catch (e) {} }
+  try { localStorage.removeItem('uh.k'); } catch (e) {}            // v1.2 kept the key here: no longer
+}
+async function api(path, method) {
+  let r;
+  try { r = await fetch(path, { method: method || 'GET', headers: { 'X-UpdateHub': KEY }, cache: 'no-store' }); }
+  catch (e) { return { ok: false, error: 'השרת לא זמין — פתח את UpdateHub מקיצור הדרך' }; }
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 403 && j.auth) { authFailed = true; j.error = 'פג תוקף הדף — פתח את UpdateHub מקיצור הדרך'; }
+  else if (r.ok) authFailed = false;
+  if (!r.ok && !j.error) j.error = 'HTTP ' + r.status;
+  return j;
+}
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2600); }
+function fmtDur(ms) { if (!(ms >= 0)) return ''; const s = Math.floor(ms/1000), h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return (h ? h + ':' + String(m).padStart(2,'0') : m) + ':' + String(x).padStart(2,'0'); }
+function fmtRun(id) { const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)/.exec(id || ''); return m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]}` : (id || ''); }
+function fmtIso(s) { if (!s) return ''; const d = new Date(s); if (isNaN(d)) return s;
+  return d.toLocaleString('he-IL', { weekday:'long', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }); }
+
+/* ── polling ─────────────────────────────────────────────────────────────── */
+async function poll() {
+  try {
+    const j = await api('/api/state');
+    if (!('state' in j)) throw new Error(j.error || 'offline');
+    online = true; engineRunning = !!j.engineRunning; state = j.state;
+    const nb = $('noticeBanner'); nb.textContent = j.notice || ''; nb.classList.toggle('show', !!j.notice);
+    if (!schedLoaded && j.schedule) { applySchedule(j.schedule); schedLoaded = true; }
+    else if (j.schedule) showScheduleNote(j.schedule);
+    if (state && state.runId !== runId) { runId = state.runId; nextSeq = 0; events = []; rebuildLog(); startingUntil = 0; }
+    render();
+    if (runId) await pullEvents();
+    if (Date.now() - histAt > (engineRunning ? 15000 : 30000)) loadHistory();
+  } catch (e) {
+    online = false; render();
+  }
+  setTimeout(poll, engineRunning ? 1000 : 3500);
+}
+async function pullEvents() {
+  for (let i = 0; i < 6; i++) {
+    const j = await api(`/api/events?run=${encodeURIComponent(runId)}&after=${nextSeq}`);
+    if (!j.events || !j.events.length) break;
+    nextSeq = j.next; appendEvents(j.events);
+    if (j.events.length < 4000) break;
+  }
+}
+
+/* ── render ──────────────────────────────────────────────────────────────── */
+function render() {
+  const s = state;
+  const chip = $('runChip');
+  if (!online) {
+    chip.className = 'chip offline';
+    chip.lastChild.textContent = authFailed ? 'פג תוקף הדף — פתח מקיצור הדרך UpdateHub' : 'השרת סגור — פתח מקיצור הדרך UpdateHub';
+  } else if (!s) {
+    chip.className = 'chip'; chip.lastChild.textContent = 'לא בוצעה ריצה';
+  } else {
+    let st = s.status;
+    if (st === 'running' && !engineRunning) st = 'failed';   // engine died without finishing
+    chip.className = 'chip ' + st;
+    chip.lastChild.textContent = (s.mode === 'Scan' ? 'סריקה · ' : 'עדכון · ') + (own(RUN, st) || st);
+  }
+  const running = !!(s && s.status === 'running' && engineRunning);
+  $('logo').classList.toggle('spin', running);
+  const starting = Date.now() < startingUntil;
+  $('btnUpdate').disabled = running || starting || !online;
+  $('btnScan').disabled = running || starting || !online;
+  $('btnCancel').hidden = !running;
+
+  if (s && s.machine && s.machine.model) {
+    const m = s.machine;
+    $('machine').textContent = `${m.manufacturer} ${m.model} · ${m.os} ${m.osVersion} · build ${m.osBuild}`;
+  } else if (!s) $('machine').textContent = 'לחץ "סריקה בלבד" כדי לראות מה זמין, או "עדכן הכל"';
+
+  // hero
+  const pct = s ? Math.max(0, Math.min(100, +s.progress || 0)) : 0;
+  $('pct').textContent = s ? Math.round(pct) : '0';
+  $('bar').setAttribute('aria-valuenow', Math.round(pct));
+  const fill = $('fill'); fill.style.width = pct + '%';
+  fill.className = 'fill' + (running ? ' run' : s && s.status === 'completed' ? ' done' : s && s.status !== 'running' && s.status !== 'skipped' ? ' bad' : '');
+  let phase = 'לא בוצעה ריצה עדיין';
+  if (s) {
+    const cur = (s.providers || []).find(p => p.status === 'running');
+    if (running) phase = cur ? cur.title : 'מתחיל...';
+    else if (s.status === 'running') phase = 'הריצה נקטעה (המנוע נסגר באמצע)';
+    else phase = (s.mode === 'Scan' ? 'הסריקה ' : 'העדכון ') + (own(RUN, s.status) || s.status);
+  }
+  $('phase').textContent = phase;
+  $('current').textContent = running ? (s.current || '') : '';
+  renderMeta();
+
+  const c = (s && s.counts) || {};
+  const rb = $('rebootBanner'), nRb = c.reboot || 0;
+  if (s && s.rebootRequired && !running) {
+    const fw = (s.providers || []).some(p => (p.items || []).some(i => i.status === 'reboot' && /קושחה/.test(i.source || '')));
+    rb.textContent = `נדרש אתחול כדי להשלים ${nRb || ''} עדכונים${fw ? ' (כולל קושחה — אל תנתק חשמל בזמן האתחול)' : ''}. שמור עבודה פתוחה ולחץ "אתחל עכשיו".`;
+    rb.classList.add('show'); $('btnReboot').hidden = false;
+  } else { rb.classList.remove('show'); $('btnReboot').hidden = true; }
+
+  $('tiles').innerHTML = TILES.map(([k, l, cls]) =>
+    `<div class="tile ${cls}${c[k] ? '' : ' zero'}"><div class="n">${esc(c[k] || 0)}</div><div class="l">${l}</div></div>`).join('');
+
+  renderProviders();
+}
+function renderMeta() {
+  const s = state; if (!s) { $('meta').innerHTML = ''; return; }
+  const start = new Date(s.startedAt), end = s.finishedAt ? new Date(s.finishedAt) : new Date();
+  const parts = [`<span>התחלה <b>${esc(fmtRun(s.runId))}</b></span>`, `<span>משך <b>${fmtDur(end - start)}</b></span>`];
+  if (s.scheduled) parts.push('<span>הופעל מתזמון</span>');
+  $('meta').innerHTML = parts.join('');
+}
+
+function shouldOpen(p) {
+  if (p.id in userOpen) return userOpen[p.id];
+  if (p.status === 'running') return true;
+  return (p.items || []).some(i => ['failed','manual','reboot','available','updated','downloading','installing'].includes(i.status));
+}
+function renderProviders() {
+  const ps = (state && state.providers) || [];
+  const key = JSON.stringify(ps) + JSON.stringify(userOpen);
+  if (key === lastProvJson) return;
+  lastProvJson = key;
+  ps.forEach(p => provTitles[p.id] = p.title);
+  syncProvFilter();
+  if (!ps.length) { $('plist').innerHTML = '<div class="empty">אין נתונים עדיין.</div>'; return; }
+  $('plist').innerHTML = ps.map(p => {
+    const items = p.items || [];
+    const fin = items.filter(i => !['checking','available','downloading','installing'].includes(i.status)).length;
+    const pr = items.length ? Math.round(100 * fin / items.length) : 8;
+    const rows = items.map(i => {
+      const [lbl, cls] = own(ITEM, i.status) || [String(i.status), ''];
+      const ver = i.available && i.available !== i.installed
+        ? `<bdi>${esc(i.installed || '—')}</bdi> <span class="to">→</span> <bdi>${esc(i.available)}</bdi>`
+        : `<bdi>${esc(i.installed || i.available || '')}</bdi>`;
+      return `<div class="row"><div class="nm"><bdi title="${esc(i.name)}">${esc(i.name)}</bdi>${i.reason ? `<div class="rs">${esc(i.reason)}</div>` : ''}</div>`+
+             `<div class="src" title="${esc(i.source)}">${esc(i.source)}</div><div class="ver" dir="ltr">${ver}</div><span class="pill ${cssTok(cls)}">${esc(lbl)}</span></div>`;
+    }).join('');
+    return `<div class="prov st-${cssTok(p.status)}${shouldOpen(p) ? ' open' : ''}" data-id="${esc(p.id)}">`+
+      `<button class="phead" type="button"><span class="dot"></span><span style="min-width:0"><span class="ptitle">${esc(p.title)}</span>`+
+      `<span class="psum">${esc(p.summary || (p.status === 'running' ? `${fin}/${items.length} נבדקו` : ''))}</span></span>`+
+      `<span class="pstat">${esc(own(PROV, p.status) || p.status)}</span><span class="chev"></span></button>`+
+      `<div class="mini"><div style="width:${pr}%"></div></div>`+
+      `<div class="items">${rows || '<div class="empty" style="padding:6px 10px">אין פריטים.</div>'}</div></div>`;
+  }).join('');
+}
+$('plist').addEventListener('click', e => {
+  const h = e.target.closest('.phead'); if (!h) return;
+  const el = h.parentElement, id = el.dataset.id;
+  userOpen[id] = !el.classList.contains('open'); el.classList.toggle('open', userOpen[id]);
+  lastProvJson = '';
+});
+$('expandAll').addEventListener('click', () => {
+  const ps = (state && state.providers) || [];
+  const anyClosed = ps.some(p => !shouldOpen(p));
+  ps.forEach(p => userOpen[p.id] = anyClosed);
+  $('expandAll').textContent = anyClosed ? 'סגור הכל' : 'פתח הכל';
+  lastProvJson = ''; renderProviders();
+});
+
+/* ── log ─────────────────────────────────────────────────────────────────── */
+function passes(e) { return e.l <= level && (!provFilter || e.p === provFilter); }
+function lineEl(e) {
+  const d = document.createElement('div');
+  d.className = `ln k-${e.k} l${e.l}`;
+  d.innerHTML = `<span class="t">${esc(e.t)}</span><span class="p" dir="auto">${esc(own(SHORT, e.p) || own(provTitles, e.p) || e.p)}</span><span class="m" dir="auto">${esc(e.m)}</span>`;
+  return d;
+}
+function appendEvents(list) {
+  const box = $('logBox'), atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  if (!events.length) box.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const e of list) { events.push(e); if (passes(e)) frag.appendChild(lineEl(e)); }
+  box.appendChild(frag);
+  while (box.childElementCount > 6000) box.removeChild(box.firstChild);
+  if ($('follow').checked || atBottom) box.scrollTop = box.scrollHeight;
+}
+function rebuildLog() {
+  const box = $('logBox');
+  const shown = events.filter(passes).slice(-6000);
+  if (!shown.length) { box.innerHTML = `<div class="logempty">${events.length ? 'אין שורות ברמה/מקור שנבחרו.' : 'היומן יופיע כאן כשתתחיל ריצה.'}</div>`; return; }
+  box.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  shown.forEach(e => frag.appendChild(lineEl(e)));
+  box.appendChild(frag);
+  box.scrollTop = box.scrollHeight;
+}
+function setLevel(lv) {
+  level = lv; store.set('uh.level', lv);
+  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', +b.dataset.lv === lv));
+  rebuildLog();
+}
+$('seg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setLevel(+b.dataset.lv); });
+function syncProvFilter() {
+  const sel = $('logProv'), have = new Set([...sel.options].map(o => o.value));
+  Object.keys(provTitles).forEach(id => { if (!have.has(id)) sel.add(new Option(provTitles[id], id)); });
+}
+$('logProv').addEventListener('change', e => { provFilter = e.target.value; rebuildLog(); });
+$('copyLog').addEventListener('click', async () => {
+  const txt = events.filter(passes).map(e => `${e.t}  [${e.p}]  ${e.m}`).join('\n');
+  try { await navigator.clipboard.writeText(txt); }
+  catch (err) { const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  toast('היומן הועתק');
+});
+
+/* ── actions ─────────────────────────────────────────────────────────────── */
+async function startRun(mode) {
+  const j = await api('/api/run?mode=' + mode, 'POST');
+  if (j.ok) {
+    toast(mode === 'scan' ? 'הסריקה התחילה' : 'העדכון התחיל');
+    engineRunning = true; startingUntil = Date.now() + 20000;    // no second start until the new run shows up
+    $('btnUpdate').disabled = true; $('btnScan').disabled = true;
+    setTimeout(poll, 0);
+  }
+  else toast(j.error || 'לא ניתן להתחיל');
+}
+$('btnUpdate').addEventListener('click', () => startRun('update'));
+$('btnScan').addEventListener('click', () => startRun('scan'));
+$('btnCancel').addEventListener('click', async () => {
+  if (!confirm('לעצור את הריצה? הפריט שמותקן כרגע יסתיים קודם.')) return;
+  await api('/api/cancel', 'POST'); toast('נשלחה בקשת עצירה');
+});
+$('btnReboot').addEventListener('click', async () => {
+  if (!confirm('המחשב יאותחל בעוד 15 שניות. לשמור קודם קבצים פתוחים. להמשיך?')) return;
+  const j = await api('/api/reboot', 'POST');
+  toast(j.ok ? 'אתחול בעוד 15 שניות' : (j.error || 'האתחול לא הופעל'));
+});
+
+/* ── schedule ────────────────────────────────────────────────────────────── */
+function applySchedule(s) { $('schOn').checked = !!s.enabled; $('schDay').value = s.day || 'Sunday'; $('schTime').value = s.time || '03:00'; showScheduleNote(s); }
+function showScheduleNote(s) {
+  let t = s.enabled ? `פעיל. הריצה הבאה: ${fmtIso(s.next) || '—'}` : 'כבוי. כשהוא פעיל, העדכון רץ לבד ומתעדכן כאן כשתפתח את הדף.';
+  if (s.enabled && s.last) t += ` · ריצה אחרונה: ${fmtIso(s.last)}`;
+  t += ' · אם המחשב כבוי בזמן שנקבע, הריצה תתבצע בכניסה הבאה.';
+  $('schNote').textContent = t;
+}
+$('schSave').addEventListener('click', async () => {
+  const q = `enable=${$('schOn').checked ? 1 : 0}&day=${$('schDay').value}&time=${encodeURIComponent($('schTime').value || '03:00')}`;
+  const j = await api('/api/schedule?' + q, 'POST');
+  if (j.ok) { applySchedule(j.schedule); toast($('schOn').checked ? 'התזמון נשמר' : 'התזמון בוטל'); }
+  else toast('שגיאה: ' + (j.error || ''));
+});
+
+/* ── history ─────────────────────────────────────────────────────────────── */
+async function loadHistory() {
+  histAt = Date.now();
+  try {
+    const list = await api('/api/history');
+    if (!Array.isArray(list) || !list.length) return;
+    $('hist').innerHTML = list.map(h => {
+      const c = h.counts || {}, st = own(RUN, h.status) || h.status;
+      const cls = h.status === 'completed' ? 'ok' : h.status === 'running' ? 'busy' : h.status === 'skipped' ? '' : 'err';
+      const sum = [c.updated && `${c.updated} עודכנו`, c.reboot && `${c.reboot} לאתחול`, c.failed && `${c.failed} נכשלו`,
+                   c.available && `${c.available} זמינים`, c.manual && `${c.manual} ידני`].filter(Boolean).join(' · ')
+                  // "everything is up to date" only for a run that completed with nothing failed
+                  || (h.status === 'completed' ? 'הכל מעודכן' : (h.error || 'הריצה לא הושלמה'));
+      return `<div class="hrow"><span class="d">${esc(fmtRun(h.runId))}</span><span class="m">${h.mode === 'Scan' ? 'סריקה' : 'עדכון'}${h.scheduled ? ' ⏱' : ''}</span>`+
+             `<span><span class="pill ${cls}">${esc(st)}</span></span><span class="c">${esc(sum)}${h.rebootRequired ? ' · נדרש אתחול' : ''}</span></div>`;
+    }).join('');
+  } catch (e) {}
+}
+
+setLevel(level);
+setInterval(() => { if (state && state.status === 'running') renderMeta(); }, 1000);
+initKey().then(poll);
+</script>
+</body>
+</html>
