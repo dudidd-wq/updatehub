@@ -10,7 +10,8 @@ size + SHA-256 of every self-updatable file). One file, so a CDN can never pair 
 
     python3 -I tools/sign_release.py genkey --out ~/updatehub-signing-key.pem
     python3 -I tools/sign_release.py sign --repo . --version 1.7 --key ~/updatehub-signing-key.pem --notes "..."
-    git commit ...; git tag v1.7; git push origin v1.7; git push origin main      # tag FIRST, then main
+    git commit ...; git push origin HEAD:refs/heads/v1.7; git push origin main      # release ref FIRST, then main
+    (clients fetch files from raw.githubusercontent.com/<repo>/v1.7/..., which resolves a branch or a tag named v1.7)
     python3 -I tools/sign_release.py verify-remote --repo . --version 1.7
 
 An encrypted key asks for its passphrase (or reads UPDATEHUB_KEY_PASSPHRASE). The key file never goes into the repository
@@ -89,10 +90,14 @@ def published(repo):
             return None, None
         raise
     m = json.loads(body); ver = m['version']
-    r = subprocess.run(['git', '-C', str(repo), 'show', f'v{ver}:engine.ps1'], capture_output=True)
+    r = None
+    for ref in (f'v{ver}', f'origin/v{ver}'):                 # local tag/branch first, then the fetched release branch
+        r = subprocess.run(['git', '-C', str(repo), 'show', f'{ref}:engine.ps1'], capture_output=True)
+        if not r.returncode:
+            break
     if r.returncode:
-        sys.exit(f'GitHub shows v{ver}, but this repo has no tag v{ver} (run: git fetch --tags). The trusted key is read '
-                 'from your own git history, never from GitHub alone.')
+        sys.exit(f'GitHub shows v{ver}, but this repo has no v{ver} (run: git fetch origin v{ver}).')
+    # A forged release ref can only make this check refuse to sign (its key will not match yours) — never sign for it.
     engine_bytes = r.stdout
     as_key(pinned_in(engine_bytes.decode('utf-8-sig'))).verify(sig, body, padding.PKCS1v15(), hashes.SHA256())
     ent = [f for f in m['files'] if f['name'] == 'engine.ps1']

@@ -41,7 +41,7 @@ Windows Update (כולל אופציונליים ודרייברים) · דריי�
 1. מעדכנים את הקבצים ואת מספר הגרסה בשלושה מקומות: `$script:AppVersion` ב-`engine.ps1`, `$ServerVersion` ב-`server.ps1`, ו-`<meta name="updatehub-version">` ב-`updater.html`.
 2. בדיקה על Windows (PowerShell 5.1, כמנהל): `tools\Test-SelfUpdate.ps1`. היא מריצה את העדכון העצמי מקצה לקצה בתיקייה זמנית, מול שרת מקומי ומפתח חד-פעמי, בלי לגעת בהתקנה.
 3. `python3 -I tools/sign_release.py sign --repo . --version X.Y --key <קובץ המפתח הפרטי> --notes "מה חדש"`. הכלי מסרב אם הגרסה לא חדשה מהגרסה שפורסמה, או אם המפתח אינו המפתח שהעותקים המותקנים סומכים עליו.
-4. commit של הקבצים יחד עם `release.signed`, תגית `vX.Y`, push של התגית **ואחריו** של `main`, ואז `sign_release.py verify-remote --repo . --version X.Y`.
+4. commit של הקבצים יחד עם `release.signed`, push של ענף השחרור `vX.Y` (`git push origin HEAD:refs/heads/vX.Y`) **ואחריו** של `main`, ואז `sign_release.py verify-remote --repo . --version X.Y`. העותקים המותקנים מורידים את הקבצים מ-`<repo>/vX.Y/...`, כתובת שעובדת גם לענף וגם לתגית בשם הזה.
 
 המפתח הפרטי נמצא רק במחשב של המתחזק, והחתימה נעשית שם. הוא לא נכנס לריפו ולא יוצא מהמחשב. מספרי גרסה רק עולים.
 
