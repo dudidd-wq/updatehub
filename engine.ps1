@@ -16,11 +16,14 @@
     Event log   : %ProgramData%\UpdateHub\runs\<runId>\events.jsonl   (level 1=summary 2=detail 3=verbose)
     Read by     : server.ps1 + updater.html
 
-    Usage: powershell.exe -NoProfile -ExecutionPolicy Bypass -File engine.ps1 -Mode Update|Scan [-Scheduled]
+    Self-update : every run checks GitHub for a newer UpdateHub release. A release is installed only if its manifest
+                  carries a valid RSA signature from the key pinned below AND every file matches the signed SHA-256.
+
+    Usage: powershell.exe -NoProfile -ExecutionPolicy Bypass -File engine.ps1 -Mode Update|Scan|SelfUpdate [-Scheduled]
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Scan', 'Update')] [string]$Mode = 'Update',
+    [ValidateSet('Scan', 'Update', 'SelfUpdate')] [string]$Mode = 'Update',
     [string]$DataDir = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'UpdateHub'),
     [switch]$Scheduled
 )
@@ -35,6 +38,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 $env:WSL_UTF8 = '1'                            # wsl.exe prints UTF-16 unless told otherwise
 
 $script:AppDir     = $PSScriptRoot
+$script:InstallDir = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'UpdateHub'   # the protected installed copy
 # System paths come from the OS APIs, never from environment variables: user-level variables (ComSpec, SystemRoot,
 # ProgramFiles...) override system ones and would let an unelevated process redirect what this elevated engine runs.
 $script:Sys32      = [Environment]::SystemDirectory
@@ -46,7 +50,8 @@ $script:SysDrive   = [IO.Path]::GetPathRoot($script:Sys32).TrimEnd('\')
 $pfRoot = [Environment]::GetFolderPath('ProgramFiles')
 $env:PSModulePath = (@($env:PSModulePath -split ';' | Where-Object {
     $_ -and ($_.StartsWith($pfRoot, [StringComparison]::OrdinalIgnoreCase) -or $_.StartsWith($script:Sys32, [StringComparison]::OrdinalIgnoreCase)) }) -join ';')
-$script:UA         = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) UpdateHub/1.5'
+$script:AppVersion = '1.6'
+$script:UA         = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) UpdateHub/' + $script:AppVersion
 $script:MuService  = '7971f918-a847-4430-9279-4a52d1efe18d'   # Microsoft Update service ID
 $script:CatBase    = 'https://www.catalog.update.microsoft.com'
 
@@ -113,7 +118,7 @@ function Initialize-Run {
     $script:EvWriter.AutoFlush = $true
     $script:State = [ordered]@{
         app            = 'UpdateHub'
-        version        = '1.5'
+        version        = $script:AppVersion
         runId          = $script:RunId
         mode           = $Mode
         scheduled      = [bool]$Scheduled
@@ -180,7 +185,9 @@ function Save-State([switch]$Force) {
     for ($i = 0; $i -lt 5; $i++) {
         try {
             [IO.File]::WriteAllText($tmp, $json, $enc)
-            if (Test-Path $script:StatePath) { [IO.File]::Replace($tmp, $script:StatePath, $null) }
+            # [NullString]::Value, never $null: PowerShell passes $null to a .NET string parameter as "", and File.Replace
+            # rejects "" as a backup path - every atomic save would fail and fall through to the non-atomic write below.
+            if (Test-Path $script:StatePath) { [IO.File]::Replace($tmp, $script:StatePath, [NullString]::Value) }
             else { [IO.File]::Move($tmp, $script:StatePath) }
             return
         } catch { Start-Sleep -Milliseconds 120 }
@@ -188,6 +195,11 @@ function Save-State([switch]$Force) {
     try { [IO.File]::WriteAllText($script:StatePath, $json, $enc) } catch { }   # last resort: non-atomic write
 }
 function Flush-State { if ($script:StateDirty) { Save-State -Force } }
+function Write-AtomicText([string]$Path, [string]$Text) {
+    $tmp = $Path + '.tmp'
+    [IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+}
 
 function New-Prov([string]$Id, [string]$Title, [int]$Weight = 1) {
     $p = [ordered]@{ id = $Id; title = $Title; weight = $Weight; status = 'pending'; summary = ''; items = (New-Object System.Collections.ArrayList) }
@@ -1723,6 +1735,380 @@ function Run-Health($P) {
     Save-State -Force
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+#  Self-update (UpdateHub itself)
+# ════════════════════════════════════════════════════════════════════════════
+# Trust model: GitHub is only the transport. release.signed = one line with an RSA-3072 signature, then the manifest
+# (version + SHA-256 and size of every file). The PUBLIC key is pinned below; the private key exists only on the
+# maintainer's own PC and never goes to GitHub. A hijacked GitHub account, a CDN problem or a network attacker can at most withhold an update — never
+# install one. Only versions newer than the installed one AND not older than the newest signed version already seen
+# are accepted. Files are validated before the swap, verified on disk after it, and a fresh PowerShell must load the new
+# engine — otherwise every file is restored from the backup.
+$script:ReleaseBase = 'https://raw.githubusercontent.com/dudidd-wq/updatehub/'
+$script:ReleaseKeyN = 'xuVf2GRBi6u9hWwDIVS6zf6clI/dhQhjwfPJujJaT93h3mJZLjRwW6Rmnw/ONbitF6S9uQ57wkUl1959e+sSAsIzQR2PGEpKw2vYzWKOUqMck5TQGc+1tEwX9H06Sp9Rs1eWl1G778glzgx4xGWqoepzclNnZelMuWBeZdAIXthaQiq/+q/wDgvNvE5aZQvq2VfC7Yd3od+9Jy/Bxwu/unYh6iRlnYwRr66lqzQAQjgQ1Emw8C54TMpuGMHNrVQeo04LGS9HyBAKG7NiaPbKdjaruZYX/TAF96bTy1k1oAXxavWemfLmrN1og/PV1N3MLjQPGT2fX6Qqr1BpQP0mMSwcgFcsABxb7tIcYswBwcMV45S4wDCCZ2Z1XfooUmTPiNJVSMF7aKDozT8C7bvIu2/mnc90ZN0dUd2xI4JfA/dH5rluVYQngnHbxqhJWQNwxRtRxZ0QG9wJmNwYYLqPyn/gergTKgD/+gE6137svrWmdNa6qKuezM+BDeyF2JsB'
+$script:ReleaseKeyE = 'AQAB'
+# The only files a release may replace. Fixed in this version: a future release cannot add a new file name.
+# settings.json is never touched — it holds the user's own choices, and new settings get defaults in $script:Defaults.
+$script:SelfFiles   = @('engine.ps1', 'server.ps1', 'updater.html', 'README.txt', 'run.bat')
+$script:SelfMaxFile = 4MB
+$script:SelfQuietDays = 30          # GitHub unreachable this long → a visible failure instead of a quiet note
+$script:SelfKeep = @{}; $script:SelfMode = 'auto'; $script:SelfModeWarn = ''
+
+function Get-SelfUpdateMode {
+    # Chosen in the dashboard (server.ps1 writes it). DataDir is Administrators/SYSTEM only.
+    # No file → auto (the default). A file that exists but cannot be read → notify: never install on a guess.
+    $path = Join-Path $DataDir 'selfupdate-config.json'
+    if (-not [IO.File]::Exists($path)) { return 'auto' }
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            $m = ([string]([IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop).mode).ToLowerInvariant()
+            if ($m -in 'auto', 'notify', 'off') { return $m }
+            break
+        } catch { Start-Sleep -Milliseconds 150 }
+    }
+    $script:SelfModeWarn = 'קובץ ההגדרה של העדכון העצמי לא נקרא — הריצה מתייחסת אליו כ"הודעה בלבד"'
+    return 'notify'
+}
+
+# Fields that survive between runs: the last successful signed check, since when GitHub is unreachable, and the
+# newest signed version ever seen (so an attacker cannot steer the PC to an older signed release).
+function Read-SelfStatus {
+    $h = @{ lastOk = ''; failingSince = ''; highest = ''; manifestSha = '' }
+    try {
+        $o = [IO.File]::ReadAllText((Join-Path $DataDir 'selfupdate.json')) | ConvertFrom-Json -ErrorAction Stop
+        foreach ($k in @($h.Keys)) { if ($o.PSObject.Properties.Name -contains $k) { $h[$k] = [string]$o.$k } }
+    } catch { }
+    return $h
+}
+function Save-SelfStatus([hashtable]$H) {
+    $o = [ordered]@{ checkedAt = (Get-Date).ToString('s'); mode = $script:SelfMode; installed = $script:AppVersion
+                     latest = ''; status = ''; message = ''; previous = ''; appliedAt = ''
+                     lastOk = [string]$script:SelfKeep.lastOk; failingSince = [string]$script:SelfKeep.failingSince
+                     highest = [string]$script:SelfKeep.highest; manifestSha = [string]$script:SelfKeep.manifestSha }
+    foreach ($k in $H.Keys) { $o[$k] = $H[$k] }
+    # The 30-day clock stops only when a whole check succeeds (not merely when the manifest could be fetched).
+    if ($o.status -in 'current', 'available', 'updated', 'repaired') { $o.failingSince = ''; $script:SelfKeep.failingSince = '' }
+    try { Write-AtomicText (Join-Path $DataDir 'selfupdate.json') ($o | ConvertTo-Json -Compress) }
+    catch { Write-Ev 3 'selfupdate' ('selfupdate.json: ' + $_.Exception.Message) 'warn' }
+}
+
+# '1.7' and '1.7.0' are the same version ([version] alone would call 1.7 older than 1.7.0).
+function ConvertTo-UhVersion([string]$V) {
+    if ($V -cnotmatch '^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?\z') { return $null }
+    if ($V.Split('.').Count -eq 2) { $V += '.0' }
+    return [version]$V
+}
+
+# Small HTTPS GET into memory: hard size cap, overall deadline, honours Stop. No redirects — the release lives at
+# fixed raw.githubusercontent.com paths, and anything else (moved repo, captive portal) fails instead of being followed.
+function Get-UrlBytes([string]$Uri, [int]$MaxBytes, [string]$Prov, [int]$DeadlineSec = 120) {
+    Flush-State
+    Write-Ev 3 $Prov ("GET $Uri") 'cmd'
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $req = [Net.HttpWebRequest]::Create($Uri)
+    $req.UserAgent = $script:UA; $req.Timeout = 30000; $req.ReadWriteTimeout = 30000; $req.AllowAutoRedirect = $false
+    $req.Headers['Cache-Control'] = 'no-cache'
+    try { $resp = $req.GetResponse() }
+    catch [System.Net.WebException] {
+        $r = $_.Exception.Response
+        if ($r) { $code = [int]$r.StatusCode; $r.Close(); throw "HTTP $code" }
+        throw
+    }
+    try {
+        if ([int]$resp.StatusCode -ne 200) { throw ("HTTP {0}" -f [int]$resp.StatusCode) }
+        if ($resp.ContentLength -gt $MaxBytes) { throw ("גדול מהמותר ({0:N0} בתים)" -f $resp.ContentLength) }
+        $in = $resp.GetResponseStream(); $ms = New-Object IO.MemoryStream
+        try {
+            $buf = New-Object byte[] 65536
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                $ms.Write($buf, 0, $n)
+                if ($ms.Length -gt $MaxBytes) { throw 'גדול מהמותר' }
+                if ($sw.Elapsed.TotalSeconds -gt $DeadlineSec) { throw "איטי מדי (מעל $DeadlineSec שניות)" }
+                Test-Cancel
+            }
+            $bytes = $ms.ToArray()
+        } finally { $in.Dispose(); $ms.Dispose() }
+    } finally { $resp.Close() }
+    Write-Ev 3 $Prov ("HTTP 200 · {0:N0} bytes · {1} ms" -f $bytes.Length, $sw.ElapsedMilliseconds)
+    return , $bytes
+}
+
+function Get-Sha256Hex([byte[]]$Bytes) {
+    $h = [Security.Cryptography.SHA256]::Create()
+    try { return (-join ($h.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') })) } finally { $h.Dispose() }
+}
+
+function Test-ReleaseSignature([byte[]]$Data, [byte[]]$Sig) {
+    $p = New-Object System.Security.Cryptography.RSAParameters
+    $p.Modulus  = [Convert]::FromBase64String($script:ReleaseKeyN)
+    $p.Exponent = [Convert]::FromBase64String($script:ReleaseKeyE)
+    $rsa = $null
+    try { $rsa = New-Object System.Security.Cryptography.RSACng } catch { $rsa = [System.Security.Cryptography.RSA]::Create() }
+    try {
+        $rsa.ImportParameters($p)
+        return [bool]$rsa.VerifyData($Data, $Sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                                     [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    } catch { return $false }
+    finally { if ($rsa) { $rsa.Dispose() } }
+}
+
+# Content checks on a downloaded file, after its hash matched: the release must be internally consistent and loadable
+# by Windows PowerShell 5.1. Returns '' when the file is fine, otherwise the reason.
+function Test-ReleaseFile([string]$Name, [byte[]]$B, [string]$Version) {
+    $bom = ($B.Length -ge 3 -and $B[0] -eq 0xEF -and $B[1] -eq 0xBB -and $B[2] -eq 0xBF)
+    $off = 0; if ($bom) { $off = 3 }
+    try { $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($B, $off, $B.Length - $off) } catch { return 'אינו UTF-8 תקין' }
+    $esc = [regex]::Escape($Version)
+    switch -Regex ($Name) {
+        '\.ps1$' {
+            if (-not $bom) { return 'חסר BOM — PowerShell 5.1 היה משבש את העברית' }
+            $tok = $null; $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tok, [ref]$err)
+            if ($err -and $err.Count -gt 0) { return ('שגיאת תחביר בשורה {0}: {1}' -f $err[0].Extent.StartLineNumber, $err[0].Message) }
+            $var = @{ 'engine.ps1' = 'script:AppVersion'; 'server.ps1' = 'ServerVersion' }[$Name]
+            if ($var -and $text -notmatch ('(?m)^\$' + [regex]::Escape($var) + '\s*=\s*''' + $esc + '''')) { return "מספר הגרסה בקובץ אינו $Version" }
+        }
+        '\.html$' {
+            if ($text -notmatch ('<meta name="updatehub-version" content="' + $esc + '">') -or $text.IndexOf('</html>') -lt 0) { return "הדף חלקי או שאינו מגרסה $Version" }
+        }
+    }
+    return ''
+}
+
+# Replace one installed file: write <name>.new (flushed to disk), then File.Replace with a real backup name — never
+# $null, which PowerShell would pass as "" and File.Replace rejects. If the swap fails half way, the original is in
+# <name>.old and the caller restores from the run's backup anyway.
+function Set-InstalledFile([string]$Dest, [byte[]]$Bytes) {
+    $tmp = $Dest + '.new'; $old = $Dest + '.old'
+    $fs = New-Object IO.FileStream($tmp, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $fs.Write($Bytes, 0, $Bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
+    for ($i = 0; ; $i++) {
+        try {
+            if ([IO.File]::Exists($Dest)) {
+                if ([IO.File]::Exists($old)) { [IO.File]::Delete($old) }
+                [IO.File]::Replace($tmp, $Dest, $old)
+                try { [IO.File]::Delete($old) } catch { }
+            } else { [IO.File]::Move($tmp, $Dest) }
+            return
+        } catch {
+            if ($i -ge 4) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
+            Start-Sleep -Milliseconds 400   # an antivirus scan of the fresh file can hold it for a moment
+        }
+    }
+}
+
+# After the swap: a fresh Windows PowerShell must load the new engine from disk (dot-sourced: functions only, the
+# engine returns before its main part) and parse the new server. Catches a file that is broken on disk.
+function Test-InstalledLoads([string]$Dir, [string]$Version) {
+    $q = { param($s) "'" + $s.Replace("'", "''") + "'" }
+    $cmd = '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile(' + (& $q (Join-Path $Dir 'server.ps1')) + ', [ref]$null, [ref]$e); ' +
+           'if ($e -and $e.Count) { exit 6 }; . ' + (& $q (Join-Path $Dir 'engine.ps1')) + ' -Mode Scan; ' +
+           'if (-not (Get-Command Run-SelfUpdate -CommandType Function -ErrorAction SilentlyContinue)) { exit 9 }; ' +
+           'if ((Get-Variable AppVersion -ValueOnly -ErrorAction SilentlyContinue) -ne ' + (& $q $Version) + ') { exit 8 }; exit 0'
+    $ps = Join-Path $script:Sys32 'WindowsPowerShell\v1.0\powershell.exe'
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    $r = Invoke-External $ps ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $enc) 'selfupdate' 120 -QuietStdout
+    return [int]$r.ExitCode
+}
+
+function Run-SelfUpdate($P) {
+    $script:SelfKeep = Read-SelfStatus
+    $script:SelfMode = Get-SelfUpdateMode
+    $setting = $script:SelfMode
+    if ($script:SelfModeWarn) { Write-Ev 1 'selfupdate' $script:SelfModeWarn 'warn' }
+    $explicit = ($Mode -eq 'SelfUpdate')                     # the dashboard's "check and install now" button
+    if ($setting -eq 'off' -and -not $explicit) { Set-Prov $P 'skipped' 'עדכון עצמי כבוי (בדשבורד)'; Save-SelfStatus @{ status = 'off' }; return }
+    if ($script:SettingsError) {
+        # settings.json did not parse, so its "selfupdate": false (if any) was not seen by Invoke-Provider: honour it from
+        # the raw text, and otherwise only check — never install while the user's own settings cannot be read.
+        $rawSettings = ''; try { $rawSettings = [IO.File]::ReadAllText((Join-Path $script:AppDir 'settings.json')) } catch { }
+        if ($rawSettings -match '"selfupdate"\s*:\s*false') { Set-Prov $P 'skipped' 'מושבת ב-settings.json'; return }
+        if ($setting -eq 'auto' -and -not $explicit) { $setting = 'notify'; Write-Ev 1 'selfupdate' 'settings.json לא תקין — העדכון העצמי רק בודק ולא מתקין' 'warn' }
+    }
+    $it = Add-Entry $P 'UpdateHub' 'GitHub · חתימה דיגיטלית' $script:AppVersion
+    $fail = {
+        param([string]$Why)
+        Write-Ev 1 'selfupdate' ('עדכון UpdateHub נדחה: ' + $Why) 'err'
+        Set-Entry $it 'failed' $Why
+        Save-SelfStatus @{ status = 'failed'; message = $Why }
+    }
+    # Offline, a firewall, a GitHub outage, a release that cannot be downloaded, GitHub showing an older release: a quiet
+    # note that retries next run. One clock for all of them — after 30 days without a complete check it turns red.
+    $transient = {
+        param([string]$Why, [string]$Status = 'unreachable', [string]$Text)
+        if (-not $Text) { $Text = "לא ניתן לבדוק כרגע ($Why) — ינסה שוב בריצה הבאה" }
+        if (-not $script:SelfKeep.failingSince) { $script:SelfKeep.failingSince = (Get-Date).ToString('s') }
+        $days = 0; try { $days = [int]((Get-Date) - [datetime]$script:SelfKeep.failingSince).TotalDays } catch { }
+        if ($days -ge $script:SelfQuietDays) { & $fail ("כבר $days ימים אין עדכון תקין של UpdateHub מ-GitHub: $Why"); return }
+        Write-Ev 2 'selfupdate' $Text 'warn'
+        Set-Entry $it 'info' $Text
+        Save-SelfStatus @{ status = $Status; message = $Why }
+    }
+    try {
+        # 1 · one signed file: line 1 = base64 signature, the rest = the manifest bytes it signs (one fetch, so a CDN
+        #     can never pair a new manifest with an old signature)
+        try { $raw = Get-UrlBytes ($script:ReleaseBase + 'main/release.signed') 70000 'selfupdate' }
+        catch { if (Test-IsCancel $_) { throw }; & $transient $_.Exception.Message; return }
+        # Not shaped like a release file at all (a proxy's block page, an error page): unreachable, not tampering.
+        # Shaped right but the signature does not verify: that is the alarm.
+        $nl = [Array]::IndexOf($raw, [byte]10)
+        $sigLine = ''; if ($nl -gt 0 -and $nl -le 600) { $sigLine = [Text.Encoding]::ASCII.GetString($raw, 0, $nl).Trim() }
+        if ($sigLine -cnotmatch '^[A-Za-z0-9+/]{512}\z') { & $transient 'התקבל קובץ שאינו קובץ גרסה (ייתכן דף חסימה של הרשת)'; return }
+        $sig = [Convert]::FromBase64String($sigLine)
+        $man = New-Object byte[] ($raw.Length - $nl - 1); [Array]::Copy($raw, $nl + 1, $man, 0, $man.Length)
+        if (-not (Test-ReleaseSignature $man $sig)) { & $fail 'החתימה על קובץ הגרסה אינה תקינה — לא הותקן דבר'; return }
+        $manSha = Get-Sha256Hex $man
+        Write-Ev 2 'selfupdate' 'החתימה על קובץ הגרסה תקינה (RSA-3072 · SHA-256)' 'ok'
+        try { $j = (New-Object Text.UTF8Encoding($false, $true)).GetString($man) | ConvertFrom-Json -ErrorAction Stop } catch { & $fail 'קובץ הגרסה אינו JSON תקין'; return }
+
+        # 2 · the manifest must be well formed (signed or not, nothing in it is used blindly)
+        $ver = [string]$j.version; $vNew = ConvertTo-UhVersion $ver; $vCur = ConvertTo-UhVersion $script:AppVersion
+        if ([string]$j.app -cne 'UpdateHub' -or -not $vNew -or [string]$j.tag -cne ('v' + $ver)) { & $fail 'קובץ הגרסה אינו במבנה הצפוי'; return }
+        $files = @($j.files)
+        $names = @($files | ForEach-Object { [string]$_.name })
+        $bad = @($files | Where-Object { ([string]$_.name) -cnotin $script:SelfFiles -or ([string]$_.sha256) -cnotmatch '^[0-9a-f]{64}\z' -or
+                                         ([string]$_.size) -cnotmatch '^[0-9]{1,8}\z' -or [int64]$_.size -lt 1 -or [int64]$_.size -gt $script:SelfMaxFile })
+        if ($bad.Count -gt 0 -or @($names | Select-Object -Unique).Count -ne $names.Count -or
+            @('engine.ps1', 'server.ps1', 'updater.html' | Where-Object { $names -cnotcontains $_ }).Count -gt 0) { & $fail 'רשימת הקבצים בקובץ הגרסה אינה תקינה'; return }
+        $notes = [string]$j.notes; if ($notes.Length -gt 300) { $notes = $notes.Substring(0, 300) + '…' }
+        $script:SelfKeep.lastOk = (Get-Date).ToString('s')
+
+        # 3 · never move backwards from the newest signed release already seen — neither to an older version nor to a
+        #     different signed manifest of that same version (which would "repair" files back to an older build)
+        $vHigh = ConvertTo-UhVersion $script:SelfKeep.highest
+        if ($vHigh -and $vNew -lt $vHigh) {
+            $why = "GitHub מציג כרגע את $ver, ישנה מ-$($script:SelfKeep.highest) שכבר פורסמה — לא מתקינים גרסה ישנה יותר"
+            & $transient $why 'stale' $why; return
+        }
+        if ($vHigh -and $vNew -eq $vHigh -and $script:SelfKeep.manifestSha -and $script:SelfKeep.manifestSha -cne $manSha) {
+            & $fail "קובץ הגרסה של $ver שונה מזה שכבר אושר לאותה גרסה — לא מתקינים"; return
+        }
+        if (-not $vHigh -or $vNew -gt $vHigh -or -not $script:SelfKeep.manifestSha) { $script:SelfKeep.highest = $ver; $script:SelfKeep.manifestSha = $manSha }
+
+        # 4 · what needs installing: a newer version, or — same version — any installed file that differs from the
+        #     signed one (an install cut off by power loss, a file quarantined by antivirus)
+        $installDir = $script:InstallDir
+        $isInstalled = ([IO.Path]::GetFullPath($script:AppDir).TrimEnd('\') -ieq $installDir)
+        if ($vNew -lt $vCur) {
+            Set-Entry $it 'current' "הגרסה המותקנת חדשה מזו שפורסמה ($ver)" $ver
+            Save-SelfStatus @{ status = 'current'; latest = $ver }; return
+        }
+        $repair = ($vNew -eq $vCur)
+        $targets = @($files)
+        if ($repair) {
+            if (-not $isInstalled) { Set-Entry $it 'current' 'זו הגרסה האחרונה (בדיקה חתומה מול GitHub)' $ver; Save-SelfStatus @{ status = 'current'; latest = $ver }; return }
+            $targets = @($files | Where-Object {
+                $pth = Join-Path $installDir ([string]$_.name)
+                -not [IO.File]::Exists($pth) -or (Get-Sha256Hex ([IO.File]::ReadAllBytes($pth))) -cne [string]$_.sha256 })
+            if ($targets.Count -eq 0) {
+                Set-Entry $it 'current' 'זו הגרסה האחרונה, וכל הקבצים תואמים לחתימה' $ver
+                Save-SelfStatus @{ status = 'current'; latest = $ver }; return
+            }
+            Write-Ev 1 'selfupdate' ('קבצים שאינם תואמים לגרסה החתומה: ' + (@($targets | ForEach-Object { $_.name }) -join ', ')) 'warn'
+        } else {
+            Write-Ev 1 'selfupdate' ("גרסה חדשה של UpdateHub: $ver (מותקנת $($script:AppVersion))" + $(if ($notes) { " — $notes" } else { '' }))
+        }
+        $what = $(if ($repair) { 'תיקון קבצים: ' + (@($targets | ForEach-Object { $_.name }) -join ', ') } else { "גרסה $ver" })
+        if ($Mode -eq 'Scan' -or ($setting -eq 'notify' -and -not $explicit)) {
+            $how = 'יותקן בריצת העדכון הבאה'
+            if ($setting -eq 'notify') { $how = 'להתקנה: "בדוק והתקן עכשיו" בכרטיס "עדכון UpdateHub עצמו"' }
+            Set-Entry $it 'available' ("$what · $how" + $(if ($notes -and -not $repair) { " · $notes" } else { '' })) $ver
+            Save-SelfStatus @{ status = 'available'; latest = $ver; message = $what }; return
+        }
+
+        # 5 · download + verify everything before touching a single installed file
+        if (-not $isInstalled) { & $fail "UpdateHub לא רץ מ-$installDir — עדכון עצמי אפשרי רק בעותק המותקן"; return }
+        if ($script:AclError) { & $fail 'תיקיית הנתונים לא ננעלה — לא מעדכנים קוד במצב כזה'; return }
+        Set-Entry $it 'downloading' $what $ver
+        $payload = New-Object System.Collections.ArrayList
+        foreach ($f in $targets) {
+            $name = [string]$f.name
+            try { $b = Get-UrlBytes ($script:ReleaseBase + [string]$j.tag + '/' + $name) $script:SelfMaxFile 'selfupdate' }
+            catch {
+                if (Test-IsCancel $_) { throw }
+                $why = "ההורדה של $name נכשלה: " + $_.Exception.Message
+                & $transient $why 'unavailable' "$what — $name לא ירד ($($_.Exception.Message)); ינסה שוב בריצה הבאה"; return
+            }
+            if ($b.Length -ne [int64]$f.size -or (Get-Sha256Hex $b) -cne [string]$f.sha256) { & $fail "$name אינו תואם לטביעת האצבע החתומה — לא הותקן דבר"; return }
+            $why = Test-ReleaseFile $name $b $ver
+            if ($why) { & $fail "$name נפסל: $why — לא הותקן דבר"; return }
+            Write-Ev 3 'selfupdate' ("{0} · {1:N0} bytes · SHA-256 {2} ✓" -f $name, $b.Length, [string]$f.sha256)
+            [void]$payload.Add(@{ Name = $name; Bytes = $b; Sha = [string]$f.sha256; Existed = [IO.File]::Exists((Join-Path $installDir $name)) })
+        }
+
+        # 6 · backup, swap, verify on disk, load test — any failure puts every touched file back
+        Test-Cancel
+        Set-Entry $it 'installing' $what $ver
+        # Built in a temporary folder: 'backup' (the README rollback target) is replaced only after a successful upgrade,
+        # so a failed attempt never loses the previous good version.
+        $bak = Join-Path $DataDir $(if ($repair) { 'selfupdate\repair-backup' } else { 'selfupdate\backup-new' })
+        Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $bak | Out-Null
+        foreach ($x in $payload) { if ($x.Existed) { [IO.File]::Copy((Join-Path $installDir $x.Name), (Join-Path $bak $x.Name), $true) } }
+        [IO.File]::WriteAllText((Join-Path $bak 'version.txt'), $script:AppVersion)
+        $restoreErr = New-Object System.Collections.ArrayList
+        $restore = {
+            foreach ($x in $payload) {
+                $dst = Join-Path $installDir $x.Name
+                try {
+                    if ($x.Existed) {
+                        $old = [IO.File]::ReadAllBytes((Join-Path $bak $x.Name))
+                        # untouched (the swap stopped before it) — leave it alone
+                        if (-not [IO.File]::Exists($dst) -or (Get-Sha256Hex ([IO.File]::ReadAllBytes($dst))) -cne (Get-Sha256Hex $old)) { Set-InstalledFile $dst $old }
+                    }
+                    elseif ([IO.File]::Exists($dst)) { [IO.File]::Delete($dst) }
+                } catch { [void]$restoreErr.Add($x.Name); Write-Ev 1 'selfupdate' ("שחזור $($x.Name) נכשל: " + $_.Exception.Message + " — העותק הקודם נמצא ב-$bak") 'err' }
+            }
+        }
+        $problem = ''
+        try {
+            foreach ($x in $payload) { Set-InstalledFile (Join-Path $installDir $x.Name) $x.Bytes; Write-Ev 3 'selfupdate' ("הוחלף: " + $x.Name) }
+            foreach ($x in $payload) {
+                if ((Get-Sha256Hex ([IO.File]::ReadAllBytes((Join-Path $installDir $x.Name)))) -cne $x.Sha) { $problem = "$($x.Name) בדיסק אינו זהה לקובץ שאומת"; break }
+            }
+        } catch { $problem = 'החלפת הקבצים נכשלה: ' + $_.Exception.Message }
+        if (-not $problem) {
+            $code = -99; try { $code = Test-InstalledLoads $installDir $ver } catch { Write-Ev 2 'selfupdate' $_.Exception.Message 'err' }
+            if ($code -ne 0) { $problem = "הגרסה החדשה לא נטענה ב-PowerShell נקי (קוד $code)" }
+        }
+        if ($problem) {
+            & $restore
+            if ($restoreErr.Count -eq 0) {
+                Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
+                & $fail ("$problem — הקבצים הקודמים שוחזרו")
+            } else { & $fail ("$problem — שחזור נכשל ב-" + ($restoreErr -join ', ') + ". העותק הקודם נמצא ב-$bak") }
+            return
+        }
+        if (-not $repair) {
+            # previous backup aside → new one in place → old one deleted; if the move fails, the previous one comes back
+            $bakFinal = Join-Path $DataDir 'selfupdate\backup'; $bakOld = Join-Path $DataDir 'selfupdate\backup-old'
+            Remove-Item -LiteralPath $bakOld -Recurse -Force -ErrorAction SilentlyContinue
+            try {
+                if ([IO.Directory]::Exists($bakFinal)) { [IO.Directory]::Move($bakFinal, $bakOld) }
+                [IO.Directory]::Move($bak, $bakFinal); $bak = $bakFinal
+                Remove-Item -LiteralPath $bakOld -Recurse -Force -ErrorAction SilentlyContinue
+            } catch {
+                if (-not [IO.Directory]::Exists($bakFinal) -and [IO.Directory]::Exists($bakOld)) { try { [IO.Directory]::Move($bakOld, $bakFinal) } catch { } }
+                Write-Ev 2 'selfupdate' ('הגיבוי של הגרסה הקודמת נשאר ב-' + $bak + ': ' + $_.Exception.Message) 'warn'
+            }
+        }
+        Remove-Item -LiteralPath (Join-Path $DataDir 'selfupdate\repair-backup') -Recurse -Force -ErrorAction SilentlyContinue
+        if ($repair) {
+            Set-Entry $it 'updated' ("תוקנו: " + (@($payload | ForEach-Object { $_.Name }) -join ', ')) $ver
+            Write-Ev 1 'selfupdate' ("קבצי UpdateHub תוקנו לגרסה החתומה $ver") 'ok'
+            Save-SelfStatus @{ status = 'repaired'; latest = $ver; appliedAt = (Get-Date).ToString('s'); message = $what }
+        } else {
+            Set-Entry $it 'updated' ("עודכן ל-$ver · נכנס לתוקף מהריצה הבאה" + $(if ($notes) { " · $notes" } else { '' })) $ver
+            Write-Ev 1 'selfupdate' ("UpdateHub עודכן מ-{0} ל-{1}. הגרסה הקודמת נשמרה ב-{2}" -f $script:AppVersion, $ver, $bak) 'ok'
+            Save-SelfStatus @{ status = 'updated'; installed = $ver; latest = $ver; previous = $script:AppVersion; appliedAt = (Get-Date).ToString('s'); message = $notes }
+        }
+    } catch {
+        if (Test-IsCancel $_) { throw }
+        Write-Ev 3 'selfupdate' ([string]$_.ScriptStackTrace) 'err'
+        & $fail ('שגיאה לא צפויה: ' + $_.Exception.Message)
+    }
+}
+
 function Show-Toast([string]$Title, [string]$Text) {
     try {
         [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -1834,72 +2220,81 @@ function Test-Metered {
     } catch { return $false }
 }
 
-New-Prov 'system'        'מלאי ומערכת'                       1
-New-Prov 'windowsupdate' 'Windows Update'                     3
-New-Prov 'drivers'       'דרייברים וקושחה · קטלוג Microsoft'   4
-New-Prov 'nvidia'        'כרטיס מסך NVIDIA'                   2
-New-Prov 'office'        'Microsoft 365'                      2
-New-Prov 'winget'        'תוכנות · winget'                    3
-New-Prov 'store'         'Microsoft Store'                    1
-New-Prov 'powershell'    'מודולי PowerShell'                  1
-New-Prov 'pip'           'Python · pip'                       1
-New-Prov 'vscode'        'תוספי VS Code'                      1
-New-Prov 'wsl'           'WSL'                                1
-New-Prov 'pkgmgr'        'Chocolatey · Scoop · npm'           1
-New-Prov 'defender'      'Windows Defender'                   1
-New-Prov 'health'        'תקינות התקנים'                      1
+New-Prov 'selfupdate'    'UpdateHub עצמו'                     1
+if ($Mode -ne 'SelfUpdate') {
+    New-Prov 'system'        'מלאי ומערכת'                       1
+    New-Prov 'windowsupdate' 'Windows Update'                     3
+    New-Prov 'drivers'       'דרייברים וקושחה · קטלוג Microsoft'   4
+    New-Prov 'nvidia'        'כרטיס מסך NVIDIA'                   2
+    New-Prov 'office'        'Microsoft 365'                      2
+    New-Prov 'winget'        'תוכנות · winget'                    3
+    New-Prov 'store'         'Microsoft Store'                    1
+    New-Prov 'powershell'    'מודולי PowerShell'                  1
+    New-Prov 'pip'           'Python · pip'                       1
+    New-Prov 'vscode'        'תוספי VS Code'                      1
+    New-Prov 'wsl'           'WSL'                                1
+    New-Prov 'pkgmgr'        'Chocolatey · Scoop · npm'           1
+    New-Prov 'defender'      'Windows Defender'                   1
+    New-Prov 'health'        'תקינות התקנים'                      1
+}
 Save-State -Force
 
-$modeText = 'עדכון מלא'; if ($Mode -eq 'Scan') { $modeText = 'סריקה בלבד' }
+$modeText = @{ Update = 'עדכון מלא'; Scan = 'סריקה בלבד'; SelfUpdate = 'עדכון UpdateHub' }[$Mode]
 Write-Ev 1 'system' ("UpdateHub · $modeText · ריצה $($script:RunId)") 'step'
 $final = 'completed'
 try {
     if (-not (Test-IsAdmin)) { throw 'נדרשות הרשאות מנהל (הפעל דרך קיצור הדרך UpdateHub)' }
-    # Fail closed: running with defaults would silently drop the user's exclusions and firmware limits.
-    if ($script:SettingsError) { throw ('settings.json לא תקין, הריצה לא התחילה: ' + $script:SettingsError) }
     # Never execute downloaded installers from a folder that standard users might be able to write to.
-    if ($script:AclError -and $Mode -eq 'Update') { throw 'לא ניתן לנעול את תיקיית הנתונים — העדכון לא התחיל (סריקה עדיין אפשרית)' }
-    if ($Mode -eq 'Update') {
-        # A cumulative update or a GPU driver needs several GB; failing halfway through is worse than not starting.
-        $freeGb = [math]::Round((New-Object IO.DriveInfo($script:SysDrive)).AvailableFreeSpace / 1GB, 1)
-        $minGb = [double](Get-Setting 'minFreeGB')
-        if ($freeGb -lt $minGb) { throw ("יש רק $freeGb GB פנויים בכונן $($script:SysDrive) (נדרשים לפחות $minGb) — העדכון לא התחיל") }
-        if (Test-Metered) {
-            if ($Scheduled -and -not (Get-Setting 'allowMetered')) {
-                $script:SkipRun = 'החיבור לרשת מוגדר כמוגבל (metered) — הריצה המתוזמנת דולגה (allowMetered בהגדרות)'
-                throw $script:SkipRun
+    if ($script:AclError -and $Mode -ne 'Scan') { throw 'לא ניתן לנעול את תיקיית הנתונים — העדכון לא התחיל (סריקה עדיין אפשרית)' }
+    # UpdateHub itself first, before the settings / disk / network gates below: a release that fixes one of them must
+    # still be able to arrive. Files are swapped on disk while this run goes on with the code already in memory.
+    Invoke-Provider 'selfupdate'    { param($p) Run-SelfUpdate $p }
+    if ($Mode -ne 'SelfUpdate') {
+        # Fail closed: running with defaults would silently drop the user's exclusions and firmware limits.
+        if ($script:SettingsError) { throw ('settings.json לא תקין, הריצה לא התחילה: ' + $script:SettingsError) }
+        if ($Mode -eq 'Update') {
+            # A cumulative update or a GPU driver needs several GB; failing halfway through is worse than not starting.
+            $freeGb = [math]::Round((New-Object IO.DriveInfo($script:SysDrive)).AvailableFreeSpace / 1GB, 1)
+            $minGb = [double](Get-Setting 'minFreeGB')
+            if ($freeGb -lt $minGb) { throw ("יש רק $freeGb GB פנויים בכונן $($script:SysDrive) (נדרשים לפחות $minGb) — העדכון לא התחיל") }
+            if (Test-Metered) {
+                if ($Scheduled -and -not (Get-Setting 'allowMetered')) {
+                    $script:SkipRun = 'החיבור לרשת מוגדר כמוגבל (metered) — הריצה המתוזמנת דולגה (allowMetered בהגדרות)'
+                    throw $script:SkipRun
+                }
+                Write-Ev 1 'system' 'החיבור לרשת מוגדר כמוגבל (metered) — העדכון עלול להוריד כמה GB' 'warn'
             }
-            Write-Ev 1 'system' 'החיבור לרשת מוגדר כמוגבל (metered) — העדכון עלול להוריד כמה GB' 'warn'
         }
+        if (-not $script:Awake) { Write-Ev 3 'system' 'לא ניתן למנוע שינה בזמן הריצה' 'warn' }
+        Invoke-Provider 'system'        { param($p) Run-System $p }
+        Invoke-Provider 'windowsupdate' { param($p) Run-WindowsUpdate $p }
+        Invoke-Provider 'drivers'       { param($p) Run-Drivers $p }
+        Invoke-Provider 'nvidia'        { param($p) Run-Nvidia $p }
+        Invoke-Provider 'office'        { param($p) Run-Office $p }
+        Invoke-Provider 'winget'        { param($p) Run-Winget $p }
+        Invoke-Provider 'store'         { param($p) Run-Store $p }
+        Invoke-Provider 'powershell'    { param($p) Run-PowerShell $p }
+        Invoke-Provider 'pip'           { param($p) Run-Pip $p }
+        Invoke-Provider 'vscode'        { param($p) Run-VSCode $p }
+        Invoke-Provider 'wsl'           { param($p) Run-Wsl $p }
+        Invoke-Provider 'pkgmgr'        { param($p) Run-PkgMgr $p }
+        Invoke-Provider 'defender'      { param($p) Run-Defender $p }
+        Invoke-Provider 'health'        { param($p) Run-Health $p }
     }
-    if (-not $script:Awake) { Write-Ev 3 'system' 'לא ניתן למנוע שינה בזמן הריצה' 'warn' }
-    Invoke-Provider 'system'        { param($p) Run-System $p }
-    Invoke-Provider 'windowsupdate' { param($p) Run-WindowsUpdate $p }
-    Invoke-Provider 'drivers'       { param($p) Run-Drivers $p }
-    Invoke-Provider 'nvidia'        { param($p) Run-Nvidia $p }
-    Invoke-Provider 'office'        { param($p) Run-Office $p }
-    Invoke-Provider 'winget'        { param($p) Run-Winget $p }
-    Invoke-Provider 'store'         { param($p) Run-Store $p }
-    Invoke-Provider 'powershell'    { param($p) Run-PowerShell $p }
-    Invoke-Provider 'pip'           { param($p) Run-Pip $p }
-    Invoke-Provider 'vscode'        { param($p) Run-VSCode $p }
-    Invoke-Provider 'wsl'           { param($p) Run-Wsl $p }
-    Invoke-Provider 'pkgmgr'        { param($p) Run-PkgMgr $p }
-    Invoke-Provider 'defender'      { param($p) Run-Defender $p }
-    Invoke-Provider 'health'        { param($p) Run-Health $p }
 }
 catch [System.OperationCanceledException] { $final = 'cancelled'; Write-Ev 1 'system' 'הריצה בוטלה' 'warn' }
 catch {
+  $sysProv = $script:Prov['system']; if (-not $sysProv) { $sysProv = $script:Prov['selfupdate'] }   # SelfUpdate mode has no 'system' row
   if ($script:SkipRun) {
     # A deliberate skip (metered network) is neutral, not a failure.
     $final = 'skipped'; $script:State.error = $script:SkipRun
     Write-Ev 1 'system' $script:SkipRun 'warn'
-    try { $e = Add-Entry $script:Prov['system'] 'הריצה דולגה' 'UpdateHub' ''; Set-Entry $e 'skipped' $script:SkipRun } catch { }
+    try { $e = Add-Entry $sysProv 'הריצה דולגה' 'UpdateHub' ''; Set-Entry $e 'skipped' $script:SkipRun } catch { }
   } else {
     $final = 'failed'; $script:State.error = $_.Exception.Message
     Write-Ev 1 'system' ('הריצה נעצרה: ' + $_.Exception.Message) 'err'
     # Visible as a failed row too, so the tiles / toast / history never say "everything is up to date".
-    try { $e = Add-Entry $script:Prov['system'] 'הריצה נעצרה' 'UpdateHub' ''; Set-Entry $e 'failed' $_.Exception.Message } catch { }
+    try { $e = Add-Entry $sysProv 'הריצה נעצרה' 'UpdateHub' ''; Set-Entry $e 'failed' $_.Exception.Message } catch { }
   }
 }
 finally {

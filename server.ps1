@@ -8,15 +8,18 @@
     GET  /api/state               live state + engine/schedule status          ┐
     GET  /api/events?run=&after=  event log lines after a line number          │ every /api/* call needs
     GET  /api/history             summaries of recent runs                     │ the per-session key in the
-    POST /api/run?mode=update|scan                                              │ X-UpdateHub header
-    POST /api/cancel                                                            │
-    POST /api/reboot                                                            │
-    POST /api/schedule?enable=1|0&day=Sunday&time=03:00                        ┘
+    POST /api/run?mode=update|scan|selfupdate                                  │ X-UpdateHub header
+    POST /api/cancel                                                           │
+    POST /api/reboot                                                           │
+    POST /api/schedule?enable=1|0&day=Sunday&time=03:00                        │
+    POST /api/selfupdate?mode=auto|notify|off                                  │
+    POST /api/restart          (after a self-update)                           ┘
 
     server.ps1 -Uninstall   removes the task(s), the shortcuts, Program Files\UpdateHub and ProgramData\UpdateHub.
 #>
 param([int]$Port = 0, [switch]$Uninstall)
 
+$ServerVersion = '1.6'
 $ErrorActionPreference = 'Continue'
 $AppDir = $PSScriptRoot
 
@@ -86,6 +89,55 @@ function Test-EngineRunning {
     return $false
 }
 
+function Read-Shared([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+            $sr = New-Object IO.StreamReader($fs, (New-Object Text.UTF8Encoding($false)))
+            try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
+        } catch { Start-Sleep -Milliseconds 60 }
+    }
+    return $null
+}
+
+# Self-update: the mode is the dashboard's choice (this server writes it); the status is the engine's last check.
+# Same rule as the engine: no file → auto; a file that exists but cannot be read → notify (never auto on a guess).
+function Get-SelfUpdateMode {
+    $path = Join-Path $DataDir 'selfupdate-config.json'
+    if (-not (Test-Path -LiteralPath $path)) { return 'auto' }
+    $t = Read-Shared $path
+    try { $m = ([string]($t | ConvertFrom-Json -ErrorAction Stop).mode).ToLowerInvariant(); if ($m -in 'auto', 'notify', 'off') { return $m } } catch { }
+    return 'notify'
+}
+function Set-SelfUpdateMode([string]$Mode) {
+    if ($Mode -cnotin 'auto', 'notify', 'off') { throw 'מצב לא מוכר' }
+    $path = Join-Path $DataDir 'selfupdate-config.json'; $tmp = $path + '.tmp'
+    [IO.File]::WriteAllText($tmp, ([ordered]@{ mode = $Mode } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+    # [NullString]::Value, not $null: PowerShell would pass "" and File.Replace rejects an empty backup path.
+    # A few tries: the engine may be reading the file at this very moment.
+    for ($i = 0; ; $i++) {
+        try { if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }; return }
+        catch { if ($i -ge 4) { throw }; Start-Sleep -Milliseconds 150 }
+    }
+}
+# "providers": { "selfupdate": false } in settings.json stops self-update regardless of the dashboard choice.
+function Test-SelfUpdateKilled {
+    try { $t = [IO.File]::ReadAllText((Join-Path $AppDir 'settings.json')) } catch { return $false }
+    try { $pv = ($t | ConvertFrom-Json -ErrorAction Stop).providers; return ($pv -and ($pv.PSObject.Properties.Name -contains 'selfupdate') -and -not [bool]$pv.selfupdate) }
+    catch { return ($t -match '"selfupdate"\s*:\s*false') }
+}
+# The version of server.ps1 on disk. After a self-update (or a rollback) it differs from the code this process runs.
+function Get-VersionInFile([string]$Path, [string]$Var) {
+    try { $m = [regex]::Match([IO.File]::ReadAllText($Path), '(?m)^\$' + [regex]::Escape($Var) + '\s*=\s*''([0-9.]+)''') ; if ($m.Success) { return $m.Groups[1].Value } } catch { }
+    return ''
+}
+function ConvertTo-UhVersion([string]$V) {
+    if ($V -cnotmatch '^[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?\z') { return $null }
+    if ($V.Split('.').Count -eq 2) { $V += '.0' }
+    return [version]$V
+}
+
 function Get-Shortcuts {
     return @{
         Desktop   = Join-Path ([Environment]::GetFolderPath('Desktop'))  'UpdateHub.lnk'
@@ -148,8 +200,11 @@ if (-not $sameDir) {
     try { $copy = (-not $installed) -or (Test-FolderSafe $AppDir) } catch { $copy = -not $installed }
     $engineBusy = $false
     try { $m = $null; if ([Threading.Mutex]::TryOpenExisting('Global\UpdateHub.Engine', [ref]$m)) { $m.Dispose(); $engineBusy = $true } } catch { }
-    if ($copy -and $engineBusy -and $installed) { Write-Host '  A run is in progress - UpdateHub will be updated next time.' -ForegroundColor Yellow; $copy = $false }
+    $busySkip = $false
+    if ($copy -and $engineBusy -and $installed) { Write-Host '  A run is in progress - nothing was copied. Run it again after the run finishes.' -ForegroundColor Yellow; $copy = $false; $busySkip = $true }
     if ($copy) {
+        $oldVer = ConvertTo-UhVersion (Get-VersionInFile $EnginePath 'script:AppVersion')
+        $newVerText = Get-VersionInFile (Join-Path $AppDir 'engine.ps1') 'script:AppVersion'; $newVer = ConvertTo-UhVersion $newVerText
         try {
             if (-not (Test-Path -LiteralPath $InstallDir)) { New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null }   # inherits Program Files ACL
             foreach ($f in $AppFiles) {
@@ -158,7 +213,22 @@ if (-not $sameDir) {
             }
             Write-Host "  Installed to $InstallDir" -ForegroundColor Cyan
         } catch { Write-Host ("Cannot write $InstallDir : " + $_.Exception.Message) -ForegroundColor Red; Read-Host 'Press Enter' | Out-Null; exit 1 }
-    } elseif ($installed) {
+        # A manual install makes the last self-update result stale (the newest version seen is kept). Installing an OLDER
+        # version than the one that was there is a rollback: 'auto' would reinstall the newer release on the next run.
+        try {
+            if (-not (Test-Path -LiteralPath $DataDir)) { New-LockedDir $DataDir }
+            $sp = Join-Path $DataDir 'selfupdate.json'
+            if (Test-Path -LiteralPath $sp) {
+                try { $o = [IO.File]::ReadAllText($sp) | ConvertFrom-Json -ErrorAction Stop; $o.status = 'manual'; $o.installed = $newVerText; $o.message = ''
+                      [IO.File]::WriteAllText($sp, ($o | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false))) }
+                catch { Remove-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue }
+            }
+            if ($oldVer -and $newVer -and $newVer -lt $oldVer) {
+                if ((Get-SelfUpdateMode) -eq 'auto') { Set-SelfUpdateMode 'notify' }
+                Write-Host "  Older version installed (rollback): automatic self-update is now 'notify only'. Change it in the dashboard." -ForegroundColor Yellow
+            }
+        } catch { Write-Host ('  Self-update status was not reset: ' + $_.Exception.Message) -ForegroundColor Yellow }
+    } elseif ($installed -and -not $busySkip) {
         Write-Host "  $AppDir can be changed by other accounts on this PC - nothing was copied from it." -ForegroundColor Yellow
         Write-Host '  Starting the installed copy. Use the UpdateHub shortcut on the desktop / Start menu from now on.' -ForegroundColor Yellow
     }
@@ -267,18 +337,6 @@ function Send-Bytes($Ctx, [int]$Code, [string]$Type, [byte[]]$Bytes) {
 function Send-Json($Ctx, [string]$Json, [int]$Code = 200) { Send-Bytes $Ctx $Code 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes($Json)) }
 function ConvertTo-JsonString([string]$S) { return ($S | ConvertTo-Json -Compress) }
 
-function Read-Shared([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    for ($i = 0; $i -lt 3; $i++) {
-        try {
-            $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
-            $sr = New-Object IO.StreamReader($fs, (New-Object Text.UTF8Encoding($false)))
-            try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
-        } catch { Start-Sleep -Milliseconds 60 }
-    }
-    return $null
-}
-
 $script:SchedCache = $null; $script:SchedAt = [datetime]::MinValue
 function Get-ScheduleJson([switch]$Fresh) {
     if (-not $Fresh -and $script:SchedCache -and ((Get-Date) - $script:SchedAt).TotalSeconds -lt 15) { return $script:SchedCache }
@@ -328,11 +386,24 @@ function Start-Engine([string]$Mode) {
     return $true
 }
 
+$script:DiskVer = ''; $script:DiskVerAt = [datetime]::MinValue
+function Get-SelfUpdateJson {
+    $st = Read-Shared (Join-Path $DataDir 'selfupdate.json')
+    if (-not $st -or -not $st.TrimStart().StartsWith('{')) { $st = 'null' }
+    else { try { $null = $st | ConvertFrom-Json -ErrorAction Stop } catch { $st = 'null' } }   # a torn file must not break /api/state
+    if (((Get-Date) - $script:DiskVerAt).TotalSeconds -gt 10) { $script:DiskVer = Get-VersionInFile (Join-Path $InstallDir 'server.ps1') 'ServerVersion'; $script:DiskVerAt = Get-Date }
+    $stale = 'false'; if ($script:DiskVer -and $script:DiskVer -ne $ServerVersion) { $stale = 'true' }
+    $killed = 'false'; if (Test-SelfUpdateKilled) { $killed = 'true' }
+    return ('{"mode":' + (ConvertTo-JsonString (Get-SelfUpdateMode)) + ',"killSwitch":' + $killed + ',"diskVersion":' + (ConvertTo-JsonString $script:DiskVer) +
+            ',"serverStale":' + $stale + ',"status":' + $st + '}')
+}
+
 function Get-StateJson {
     $state = Read-Shared (Join-Path $DataDir 'state.json')
     if (-not $state -or -not $state.TrimStart().StartsWith('{')) { $state = 'null' }
     $running = 'false'; if (Test-EngineRunning) { $running = 'true' }
-    return ('{"engineRunning":' + $running + ',"notice":' + (ConvertTo-JsonString $script:Notice) + ',"schedule":' + (Get-ScheduleJson) + ',"state":' + $state + '}')
+    return ('{"engineRunning":' + $running + ',"serverVersion":' + (ConvertTo-JsonString $ServerVersion) + ',"notice":' + (ConvertTo-JsonString $script:Notice) +
+            ',"schedule":' + (Get-ScheduleJson) + ',"selfUpdate":' + (Get-SelfUpdateJson) + ',"state":' + $state + '}')
 }
 
 # events.jsonl is read incrementally: only the new bytes since the last poll, cut at the last complete line, so a
@@ -418,10 +489,7 @@ function Invoke-Request($Ctx) {
 
     if ($req.HttpMethod -eq 'GET') {
         switch ($path) {
-            { $_ -in '/', '/index.html' } {
-                $html = [IO.File]::ReadAllBytes((Join-Path $AppDir 'updater.html'))
-                Send-Bytes $Ctx 200 'text/html; charset=utf-8' $html; return
-            }
+            { $_ -in '/', '/index.html' } { Send-Bytes $Ctx 200 'text/html; charset=utf-8' $script:Html; return }
             '/api/state'   { Send-Json $Ctx (Get-StateJson); return }
             '/api/events'  { $a = 0; [void][int]::TryParse([string]$req.QueryString['after'], [ref]$a)
                              Send-Json $Ctx (Get-EventsJson ([string]$req.QueryString['run']) $a); return }
@@ -436,7 +504,9 @@ function Invoke-Request($Ctx) {
                 Send-Json $Ctx ('{"key":' + (ConvertTo-JsonString $Token) + '}'); return
             }
             '/api/run' {
-                $mode = 'Update'; if ($req.QueryString['mode'] -eq 'scan') { $mode = 'Scan' }
+                $mode = 'Update'; $q = [string]$req.QueryString['mode']
+                if ($q -eq 'scan') { $mode = 'Scan' } elseif ($q -eq 'selfupdate') { $mode = 'SelfUpdate' }
+                if ($mode -eq 'SelfUpdate' -and ((Get-SelfUpdateMode) -eq 'off' -or (Test-SelfUpdateKilled))) { Send-Json $Ctx '{"ok":false,"error":"העדכון העצמי כבוי"}' 409; return }
                 if (Start-Engine $mode) { Write-Host ("[{0}] run started: {1}" -f (Get-Date -Format 'HH:mm:ss'), $mode); Send-Json $Ctx '{"ok":true}' }
                 else { Send-Json $Ctx '{"ok":false,"error":"ריצה כבר פעילה"}' 409 }
                 return
@@ -457,6 +527,17 @@ function Invoke-Request($Ctx) {
                 } catch { Send-Json $Ctx ('{"ok":false,"error":' + (ConvertTo-JsonString $_.Exception.Message) + '}') 500 }
                 return
             }
+            '/api/selfupdate' {
+                try { Set-SelfUpdateMode ([string]$req.QueryString['mode']); Send-Json $Ctx ('{"ok":true,"selfUpdate":' + (Get-SelfUpdateJson) + '}') }
+                catch { Send-Json $Ctx ('{"ok":false,"error":' + (ConvertTo-JsonString $_.Exception.Message) + '}') 400 }
+                return
+            }
+            '/api/restart' {
+                # After a self-update this process still runs the old code: hand over to the new server.ps1.
+                if (Test-EngineRunning) { Send-Json $Ctx '{"ok":false,"error":"ריצה פעילה — טעינה מחדש אחרי סיומה"}' 409; return }
+                $script:Restart = $true
+                Send-Json $Ctx '{"ok":true}'; return
+            }
         }
     }
     Send-Json $Ctx '{"error":"not found"}' 404
@@ -472,10 +553,15 @@ if ($oldTask -and ([string]$oldTask.Actions[0].Arguments).IndexOf($EnginePath, [
     catch { Write-Host ('  Could not update the weekly task: ' + $_.Exception.Message) -ForegroundColor Yellow }
 }
 
+# The page is read once: after a self-update this (old) server keeps serving the page that matches its own API
+# until it is restarted, instead of a newer page talking to an older server.
+$script:Html = [IO.File]::ReadAllBytes((Join-Path $AppDir 'updater.html'))
+$script:Restart = $false
+
 # ── main loop (async wait so Ctrl+C still works) ──────────────────────────────────
 Start-Process $OpenUrl
 try {
-    while ($listener.IsListening) {
+    while ($listener.IsListening -and -not $script:Restart) {
         $task = $listener.GetContextAsync()
         while (-not $task.AsyncWaitHandle.WaitOne(500)) { }
         $ctx = $task.GetAwaiter().GetResult()
@@ -488,4 +574,9 @@ try {
 } finally {
     Remove-Item -LiteralPath $BootPath -Force -ErrorAction SilentlyContinue
     $listener.Stop(); $listener.Close()
+}
+if ($script:Restart) {
+    # The port is free now; the new server opens its own tab with a fresh single-use key.
+    Write-Host '  Restarting UpdateHub with the updated version...' -ForegroundColor Cyan
+    Start-Process -FilePath $PsExe -WorkingDirectory $InstallDir -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $InstallDir 'server.ps1') + '"')
 }

@@ -1,0 +1,35 @@
+nUYJ33ytmHOozpz/zo24QrYfI4tHUzYNFRTVldWGbkOH2w8INQJCmzMhybaoCZG9V2e42vKCArRGL5trRZ9aeM7BcnjOIJbxWsRLvwJ2HBZtj5JS69Cvp1ynAJQdoUEGmbTx9+8e+CXbVT93PIKO27LTaGuRCbVJ6lWRAemAy2w5zpZCeEYq0lKVZWLRvMuHC+Mu34RjKMTfc0ZIR2+qqShKfamfakNugUF/uDWZk8Km7UnPBrA+Scju9cfvx2pKVDsNNarDdv4xdcs6LGaTm93J11tfzrpGndLomq6fk3NJwG2VoM12qtbn0e5wHSr5y8iWfLq+Xz8d7tI0le8GACwQoUIqU0AWZmFiFbwu6HCHUsFL/o0qJR9+SRKYQYjr1EWwhHg7IFr1WoxZZ3v+KB7iBgA981dV6PxL/ahADn1EzieagcQlD7nB9a21P3jfvSaI+q++dNQX8kd5ejn5SiJxsUupuv17S9ZYWdiX2Y7afSkwi8PW+uLgyNHYaR8Y
+{
+  "app": "UpdateHub",
+  "version": "1.6",
+  "tag": "v1.6",
+  "released": "2026-11-21",
+  "notes": "עדכון עצמי חתום מ-GitHub · בחירה בדשבורד: אוטומטי / הודעה בלבד / כבוי",
+  "files": [
+    {
+      "name": "engine.ps1",
+      "size": 163402,
+      "sha256": "ab40dcaf00ddac8b7bdf742663a499b92bc942b080ce5e9ffb21fbc627418837"
+    },
+    {
+      "name": "server.ps1",
+      "size": 39352,
+      "sha256": "c671e3dcbdd170d4fb9e9e6e7a7359c48d76f95aff2a658a43c2f1b4fc2a7d0f"
+    },
+    {
+      "name": "updater.html",
+      "size": 40400,
+      "sha256": "95c5e79693ed2dab2d47a1182a09c79acf5b8b2801626fc4077654087d801136"
+    },
+    {
+      "name": "README.txt",
+      "size": 17129,
+      "sha256": "0bf11d55d6e9cce183e64f902b1daa9edb79e547dbb94a51f46f85e48bd17f6a"
+    },
+    {
+      "name": "run.bat",
+      "size": 3402,
+      "sha256": "d00c08f0a7768f7f64adab3c5ea7dcee17c0e76eeb964100de863bf1d4bfcae6"
+    }
+  ]
+}

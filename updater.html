@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="updatehub-version" content="1.6">
 <title>מרכז העדכונים</title>
 <style>
 :root{
@@ -58,6 +59,7 @@ h2{margin:0;font-size:14.5px;font-weight:650;color:#cfd9e3}
 .btn.sm{padding:4px 10px;font-size:12.5px}
 .banner{display:none;margin-top:12px;border:1px solid #6e5317;background:rgba(227,179,65,.08);color:#ffd77a;border-radius:10px;padding:9px 12px;font-size:13px}
 .banner.show{display:block}
+.banner.info{border-color:#1e4f6e;background:rgba(76,194,255,.07);color:#9fdcff}
 
 /* tiles */
 .tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px}
@@ -142,6 +144,9 @@ select,input[type=time]{background:var(--panel2);border:1px solid var(--line2);b
 .switch input:checked+span{background:#1d6fa5}
 .switch input:checked+span:before{transform:translateX(-18px)}
 .sched-note{width:100%;color:var(--muted);font-size:12.5px}
+.col{display:grid;gap:12px;align-content:start}
+#suMode{max-width:100%}
+.ver-tag{font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:400}
 .hlist{padding:0 10px 10px}
 .hrow{display:grid;grid-template-columns:120px 72px 70px minmax(0,1fr);gap:10px;padding:7px 8px;border-top:1px solid var(--line);font-size:12.5px;align-items:center}
 .hrow:first-child{border-top:none}
@@ -195,11 +200,13 @@ select,input[type=time]{background:var(--panel2);border:1px solid var(--line2);b
     <div class="meta" id="meta"></div>
     <div class="banner" id="rebootBanner"></div>
     <div class="banner" id="noticeBanner"></div>
+    <div class="banner info" id="selfBanner"></div>
     <div class="actions">
       <button class="btn primary" id="btnUpdate">עדכן הכל</button>
       <button class="btn" id="btnScan">סריקה בלבד</button>
       <button class="btn danger" id="btnCancel" hidden>עצור</button>
       <button class="btn warnb" id="btnReboot" hidden>אתחל עכשיו</button>
+      <button class="btn primary" id="btnRestart" hidden>טען מחדש את UpdateHub</button>
     </div>
   </section>
 
@@ -226,6 +233,7 @@ select,input[type=time]{background:var(--panel2);border:1px solid var(--line2);b
   </div>
 
   <div class="grid2">
+    <div class="col">
     <section class="card">
       <div class="sec-head"><h2>עדכון אוטומטי שבועי</h2></div>
       <div class="sched-body">
@@ -241,6 +249,19 @@ select,input[type=time]{background:var(--panel2);border:1px solid var(--line2);b
         <div class="sched-note" id="schNote"></div>
       </div>
     </section>
+    <section class="card">
+      <div class="sec-head"><h2>עדכון UpdateHub עצמו <span class="ver-tag" id="suVer" dir="ltr"></span></h2></div>
+      <div class="sched-body">
+        <select id="suMode" aria-label="אופן העדכון העצמי">
+          <option value="auto">אוטומטי — גרסה חדשה מותקנת בכל ריצת עדכון</option>
+          <option value="notify">הודעה בלבד — אני מאשר התקנה</option>
+          <option value="off">כבוי — לא לבדוק</option>
+        </select>
+        <button class="btn sm" id="suNow">בדוק והתקן עכשיו</button>
+        <div class="sched-note" id="suNote"></div>
+      </div>
+    </section>
+    </div>
     <section class="card">
       <div class="sec-head"><h2>ריצות קודמות</h2></div>
       <div class="hlist" id="hist"><div class="empty">אין ריצות קודמות.</div></div>
@@ -274,12 +295,14 @@ const store = { get(k,d){ try{ const v = localStorage.getItem(k); return v == nu
 
 let state = null, engineRunning = false, online = true;
 let runId = null, nextSeq = 0, events = [], provTitles = Object.create(null);
-const SHORT = { system:'מערכת', windowsupdate:'Windows Update', drivers:'דרייברים', nvidia:'NVIDIA', office:'Office',
+const SHORT = { selfupdate:'UpdateHub', system:'מערכת', windowsupdate:'Windows Update', drivers:'דרייברים', nvidia:'NVIDIA', office:'Office',
   winget:'winget', store:'Store', powershell:'PowerShell', pip:'pip', vscode:'VS Code', wsl:'WSL',
   pkgmgr:'מנהלי חבילות', defender:'Defender', health:'תקינות' };
 let level = +store.get('uh.level', 2), provFilter = '';
 const userOpen = Object.create(null);           // provider id -> true/false set by the user
 let lastProvJson = '', schedLoaded = false, histAt = 0, startingUntil = 0;
+let serverVersion = '', selfMode = '', restarted = false, killSwitch = false;
+const MODE = { Scan:'סריקה', Update:'עדכון', SelfUpdate:'עדכון הכלי' };
 
 /* Keys: the server opens this page as /?k=<boot key>. That key is single use: the page swaps it at once for the
    session key (POST /api/session), removes it from the address bar, and keeps the session key only for this tab
@@ -324,6 +347,7 @@ async function poll() {
     const nb = $('noticeBanner'); nb.textContent = j.notice || ''; nb.classList.toggle('show', !!j.notice);
     if (!schedLoaded && j.schedule) { applySchedule(j.schedule); schedLoaded = true; }
     else if (j.schedule) showScheduleNote(j.schedule);
+    serverVersion = j.serverVersion || ''; renderSelf(j.selfUpdate || {});
     if (state && state.runId !== runId) { runId = state.runId; nextSeq = 0; events = []; rebuildLog(); startingUntil = 0; }
     render();
     if (runId) await pullEvents();
@@ -348,14 +372,15 @@ function render() {
   const chip = $('runChip');
   if (!online) {
     chip.className = 'chip offline';
-    chip.lastChild.textContent = authFailed ? 'פג תוקף הדף — פתח מקיצור הדרך UpdateHub' : 'השרת סגור — פתח מקיצור הדרך UpdateHub';
+    chip.lastChild.textContent = restarted ? 'UpdateHub נפתח מחדש בלשונית חדשה — אפשר לסגור את זו'
+      : authFailed ? 'פג תוקף הדף — פתח מקיצור הדרך UpdateHub' : 'השרת סגור — פתח מקיצור הדרך UpdateHub';
   } else if (!s) {
     chip.className = 'chip'; chip.lastChild.textContent = 'לא בוצעה ריצה';
   } else {
     let st = s.status;
     if (st === 'running' && !engineRunning) st = 'failed';   // engine died without finishing
     chip.className = 'chip ' + st;
-    chip.lastChild.textContent = (s.mode === 'Scan' ? 'סריקה · ' : 'עדכון · ') + (own(RUN, st) || st);
+    chip.lastChild.textContent = (own(MODE, s.mode) || 'עדכון') + ' · ' + (own(RUN, st) || st);
   }
   const running = !!(s && s.status === 'running' && engineRunning);
   $('logo').classList.toggle('spin', running);
@@ -363,6 +388,7 @@ function render() {
   $('btnUpdate').disabled = running || starting || !online;
   $('btnScan').disabled = running || starting || !online;
   $('btnCancel').hidden = !running;
+  $('suNow').disabled = running || starting || !online || selfMode === 'off' || killSwitch;
 
   if (s && s.machine && s.machine.model) {
     const m = s.machine;
@@ -380,7 +406,7 @@ function render() {
     const cur = (s.providers || []).find(p => p.status === 'running');
     if (running) phase = cur ? cur.title : 'מתחיל...';
     else if (s.status === 'running') phase = 'הריצה נקטעה (המנוע נסגר באמצע)';
-    else phase = (s.mode === 'Scan' ? 'הסריקה ' : 'העדכון ') + (own(RUN, s.status) || s.status);
+    else phase = (s.mode === 'Scan' ? 'הסריקה ' : s.mode === 'SelfUpdate' ? 'עדכון UpdateHub ' : 'העדכון ') + (own(RUN, s.status) || s.status);
   }
   $('phase').textContent = phase;
   $('current').textContent = running ? (s.current || '') : '';
@@ -503,9 +529,9 @@ $('copyLog').addEventListener('click', async () => {
 async function startRun(mode) {
   const j = await api('/api/run?mode=' + mode, 'POST');
   if (j.ok) {
-    toast(mode === 'scan' ? 'הסריקה התחילה' : 'העדכון התחיל');
+    toast(mode === 'scan' ? 'הסריקה התחילה' : mode === 'selfupdate' ? 'בודק גרסה חדשה של UpdateHub' : 'העדכון התחיל');
     engineRunning = true; startingUntil = Date.now() + 20000;    // no second start until the new run shows up
-    $('btnUpdate').disabled = true; $('btnScan').disabled = true;
+    $('btnUpdate').disabled = true; $('btnScan').disabled = true; $('suNow').disabled = true;
     setTimeout(poll, 0);
   }
   else toast(j.error || 'לא ניתן להתחיל');
@@ -537,6 +563,51 @@ $('schSave').addEventListener('click', async () => {
   else toast('שגיאה: ' + (j.error || ''));
 });
 
+/* ── self-update ─────────────────────────────────────────────────────────── */
+function renderSelf(su) {
+  const st = su.status || null;
+  if (su.mode && su.mode !== selfMode && document.activeElement !== $('suMode')) { selfMode = su.mode; $('suMode').value = su.mode; }
+  const disk = su.diskVersion || serverVersion;
+  $('suVer').textContent = disk ? 'v' + disk : '';
+  const S = st && st.status;
+  let t = '';
+  killSwitch = !!su.killSwitch;
+  $('suMode').disabled = killSwitch;
+  if (killSwitch) t = 'מושבת ב-settings.json ("selfupdate": false תחת "providers"). כדי להפעיל, שנה שם ל-true.';
+  else if (selfMode === 'off') t = 'כבוי: UpdateHub לא בודק אם יש לו גרסה חדשה.';
+  else if (!S || S === 'off') t = 'עוד לא נבדק. הבדיקה מתבצעת בתחילת כל ריצה (גם בסריקה).';
+  else if (S === 'current') t = `מעודכן: ${disk} היא הגרסה האחרונה · נבדק ${fmtIso(st.checkedAt)}`;
+  else if (S === 'available') t = `זמין להתקנה: ${st.message || ('גרסה ' + st.latest)} · ` + (selfMode === 'notify' ? 'לחץ "בדוק והתקן עכשיו"' : 'יותקן בריצת העדכון הבאה');
+  else if (S === 'updated') t = `עודכן מ-${st.previous} ל-${st.installed} · ${fmtIso(st.appliedAt)}`;
+  else if (S === 'repaired') t = `קבצים שנפגעו תוקנו לגרסה החתומה ${st.latest} · ${fmtIso(st.appliedAt)}`;
+  else if (S === 'manual') t = `הותקן ידנית (גרסה ${st.installed || disk}). הבדיקה הבאה תתבצע בריצה הבאה.`;
+  else if (S === 'unreachable') t = `לא ניתן היה לבדוק (${st.message || ''}) · ${fmtIso(st.checkedAt)} · ינסה שוב בריצה הבאה`;
+  else if (S === 'unavailable') t = `נמצאה גרסה חדשה אבל ההורדה נכשלה (${st.message || ''}) · ינסה שוב בריצה הבאה`;
+  else if (S === 'stale') t = st.message || '';
+  else if (S === 'failed') t = `הבדיקה האחרונה נכשלה (${fmtIso(st.checkedAt)}): ${st.message || ''}`;
+  $('suNote').textContent = t + (selfMode === 'off' || killSwitch ? '' : ' · כל גרסה נבדקת מול חתימה דיגיטלית לפני שהיא מותקנת.');
+  // The files on disk are another version than this server process (after a self-update, or a rollback).
+  const need = !!su.serverStale;
+  const running = !!(state && state.status === 'running' && engineRunning);
+  const b = $('selfBanner');
+  b.textContent = need ? `קבצי UpdateHub במחשב הם גרסה ${su.diskVersion}, והדף הזה עדיין רץ בגרסה ${serverVersion}. ` +
+    (running ? 'אחרי שהריצה תסתיים יופיע כאן כפתור "טען מחדש את UpdateHub".' : 'לחץ "טען מחדש את UpdateHub" כדי לעבור לגרסה שבמחשב.') : '';
+  b.classList.toggle('show', need);
+  $('btnRestart').hidden = !need || running || restarted;
+}
+$('suMode').addEventListener('change', async () => {
+  const v = $('suMode').value;
+  const j = await api('/api/selfupdate?mode=' + encodeURIComponent(v), 'POST');
+  if (j.ok) { selfMode = v; renderSelf(j.selfUpdate || {}); render(); toast('נשמר'); }
+  else { $('suMode').value = selfMode; toast('שגיאה: ' + (j.error || '')); }
+});
+$('suNow').addEventListener('click', () => startRun('selfupdate'));
+$('btnRestart').addEventListener('click', async () => {
+  const j = await api('/api/restart', 'POST');
+  if (j.ok) { restarted = true; $('btnRestart').hidden = true; toast('UpdateHub נפתח מחדש בלשונית חדשה'); }
+  else toast(j.error || 'הטעינה מחדש לא הופעלה');
+});
+
 /* ── history ─────────────────────────────────────────────────────────────── */
 async function loadHistory() {
   histAt = Date.now();
@@ -550,7 +621,7 @@ async function loadHistory() {
                    c.available && `${c.available} זמינים`, c.manual && `${c.manual} ידני`].filter(Boolean).join(' · ')
                   // "everything is up to date" only for a run that completed with nothing failed
                   || (h.status === 'completed' ? 'הכל מעודכן' : (h.error || 'הריצה לא הושלמה'));
-      return `<div class="hrow"><span class="d">${esc(fmtRun(h.runId))}</span><span class="m">${h.mode === 'Scan' ? 'סריקה' : 'עדכון'}${h.scheduled ? ' ⏱' : ''}</span>`+
+      return `<div class="hrow"><span class="d">${esc(fmtRun(h.runId))}</span><span class="m">${esc(own(MODE, h.mode) || 'עדכון')}${h.scheduled ? ' ⏱' : ''}</span>`+
              `<span><span class="pill ${cls}">${esc(st)}</span></span><span class="c">${esc(sum)}${h.rebootRequired ? ' · נדרש אתחול' : ''}</span></div>`;
     }).join('');
   } catch (e) {}

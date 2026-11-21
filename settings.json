@@ -2,6 +2,7 @@
     "port": 8765,
 
     "providers": {
+        "selfupdate": true,
         "windowsupdate": true,
         "drivers": true,
         "nvidia": true,
